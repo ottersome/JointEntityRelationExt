@@ -1,0 +1,14 @@
+{
+  "configurations": [
+    {
+      "name": "main",
+      "type": "python",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "python": "/home/ottersome/miniconda3/envs/research/bin/python",
+      "stopOnEntry": false,
+      "debugOptions": [],
+      "program": "${workspaceFolder}/main.py"
+    }
+  ]
+}

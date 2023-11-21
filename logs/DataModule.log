@@ -1,0 +1,122 @@
+2023-11-21 03:33:23,930 - DataModule - INFO - We ended with 40149 skipped examples and result 60376
+Ratio of skips is 0.3993931857746829
+2023-11-21 03:33:34,116 - DataModule - INFO - We ended with 10367 skipped examples and result 6928
+Ratio of skips is 0.5994217982075745
+2023-11-21 03:33:40,521 - DataModule - INFO - We ended with 5258 skipped examples and result 7384
+Ratio of skips is 0.4159152032906186
+2023-11-21 03:37:54,778 - DataModule - INFO - We ended with 40149 skipped examples and result 60376
+Ratio of skips is 0.3993931857746829
+2023-11-21 03:44:56,902 - DataModule - INFO - We ended with 40149 skipped examples and result 60376
+Ratio of skips is 0.3993931857746829
+2023-11-21 03:49:30,736 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 03:49:54,378 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 03:50:52,096 - DataModule - INFO - We ended with 40149 skipped examples and result 60376
+Ratio of skips is 0.3993931857746829
+2023-11-21 04:03:44,050 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 04:04:40,453 - DataModule - INFO - We ended with 40149 skipped examples and result 60376
+Ratio of skips is 0.3993931857746829
+2023-11-21 04:07:29,100 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 04:08:25,508 - DataModule - INFO - We ended with 40149 skipped examples and result 60376
+Ratio of skips is 0.3993931857746829
+2023-11-21 04:26:44,828 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 04:39:43,010 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 04:41:21,838 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 04:50:54,245 - DataModule - INFO - We ended with 40149 skipped examples and result 60376
+Ratio of skips is 0.3993931857746829
+2023-11-21 04:52:25,419 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 04:54:15,528 - DataModule - INFO - We ended with 40149 skipped examples and result 60376
+Ratio of skips is 0.3993931857746829
+2023-11-21 05:08:20,641 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 05:10:06,736 - DataModule - INFO - We ended with 40149 skipped examples and result 60376
+Ratio of skips is 0.3993931857746829
+2023-11-21 05:11:24,374 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 05:13:13,180 - DataModule - INFO - We ended with 40149 skipped examples and result 60376
+Ratio of skips is 0.3993931857746829
+2023-11-21 05:13:59,625 - DataModule - INFO - We ended with 10367 skipped examples and result 6928
+Ratio of skips is 0.5994217982075745
+2023-11-21 05:14:12,711 - DataModule - INFO - We ended with 5258 skipped examples and result 7384
+Ratio of skips is 0.4159152032906186
+2023-11-21 06:32:31,908 - DataModule - INFO - 📂 Loading cached dataset
+2023-11-21 06:33:26,428 - DataModule - INFO - 📂 Loading cached dataset
+2023-11-21 06:48:38,831 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 06:49:35,778 - DataModule - INFO - We ended with 40149 skipped examples and result 60376
+Ratio of skips is 0.3993931857746829
+⚠️  Please write down the amount of relationship classes being used: 372
+2023-11-21 06:49:49,555 - DataModule - INFO - We ended with 10367 skipped examples and result 6928
+Ratio of skips is 0.5994217982075745
+⚠️  Please write down the amount of relationship classes being used: 227
+2023-11-21 06:49:56,663 - DataModule - INFO - We ended with 5258 skipped examples and result 7384
+Ratio of skips is 0.4159152032906186
+⚠️  Please write down the amount of relationship classes being used: 290
+2023-11-21 06:51:09,580 - DataModule - INFO - 📂 Loading cached dataset
+2023-11-21 06:54:24,091 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 06:55:20,466 - DataModule - INFO - We ended with 40149 skipped examples and result 60376
+Ratio of skips is 0.3993931857746829
+⚠️  Please write down the amount of relationship classes being used: 372
+2023-11-21 06:55:33,634 - DataModule - INFO - We ended with 10367 skipped examples and result 6928
+Ratio of skips is 0.5994217982075745
+⚠️  Please write down the amount of relationship classes being used: 412
+2023-11-21 06:55:40,742 - DataModule - INFO - We ended with 5258 skipped examples and result 7384
+Ratio of skips is 0.4159152032906186
+⚠️  Please write down the amount of relationship classes being used: 412
+2023-11-21 07:10:23,926 - DataModule - INFO - 📂 Loading cached dataset
+2023-11-21 07:10:51,716 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 07:11:48,246 - DataModule - INFO - We ended with 40149 skipped examples and result 60376
+Ratio of skips is 0.3993931857746829
+⚠️  Please write down the amount of relationship classes being used: 372
+2023-11-21 07:12:54,859 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 07:13:53,548 - DataModule - INFO - We ended with 40149 skipped examples and result 60376
+Ratio of skips is 0.3993931857746829
+⚠️  Please write down the amount of relationship classes being used: 372
+2023-11-21 07:14:06,654 - DataModule - INFO - We ended with 10367 skipped examples and result 6928
+Ratio of skips is 0.5994217982075745
+⚠️  Please write down the amount of relationship classes being used: 412
+2023-11-21 07:14:14,135 - DataModule - INFO - We ended with 5258 skipped examples and result 7384
+Ratio of skips is 0.4159152032906186
+⚠️  Please write down the amount of relationship classes being used: 412
+2023-11-21 07:18:38,669 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 07:19:34,665 - DataModule - INFO - We ended with 40149 skipped examples and result 60376
+Ratio of skips is 0.3993931857746829
+⚠️  Please write down the amount of relationship classes being used: 372
+2023-11-21 07:19:46,985 - DataModule - INFO - We ended with 10367 skipped examples and result 6928
+Ratio of skips is 0.5994217982075745
+⚠️  Please write down the amount of relationship classes being used: 412
+2023-11-21 07:19:53,992 - DataModule - INFO - We ended with 5258 skipped examples and result 7384
+Ratio of skips is 0.4159152032906186
+⚠️  Please write down the amount of relationship classes being used: 412
+2023-11-21 07:38:22,969 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 07:39:21,080 - DataModule - INFO - We ended with 40149 skipped examples and result 60376
+Ratio of skips is 0.3993931857746829
+⚠️  Please write down the amount of relationship classes being used: 372
+2023-11-21 07:39:35,172 - DataModule - INFO - We ended with 10367 skipped examples and result 6928
+Ratio of skips is 0.5994217982075745
+⚠️  Please write down the amount of relationship classes being used: 412
+2023-11-21 07:39:43,077 - DataModule - INFO - We ended with 5258 skipped examples and result 7384
+Ratio of skips is 0.4159152032906186
+⚠️  Please write down the amount of relationship classes being used: 412
+2023-11-21 07:55:13,814 - DataModule - INFO - 📂 Loading cached dataset
+2023-11-21 07:55:28,766 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 07:56:31,030 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 07:58:33,343 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 07:59:18,937 - DataModule - INFO - We ended with 65403 skipped examples and result 35122
+Ratio of skips is 0.6506142750559563
+⚠️  Please write down the amount of relationship classes being used: 270
+2023-11-21 08:05:11,607 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 08:05:38,637 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 08:06:25,788 - DataModule - INFO - We ended with 65403 skipped examples and result 35122
+Ratio of skips is 0.6506142750559563
+⚠️  Please write down the amount of relationship classes being used: 270
+2023-11-21 08:08:52,309 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 08:09:40,888 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 08:10:31,408 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 08:11:32,615 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 08:12:10,808 - DataModule - INFO - 🛠 No cached dataset foud. Will build from scratch...
+2023-11-21 08:12:54,977 - DataModule - INFO - We ended with 65403 skipped examples and result 35122
+Ratio of skips is 0.6506142750559563
+⚠️  Please write down the amount of relationship classes being used: 270
+2023-11-21 08:13:04,964 - DataModule - INFO - We ended with 12535 skipped examples and result 4760
+Ratio of skips is 0.7247759468054351
+⚠️  Please write down the amount of relationship classes being used: 313
+2023-11-21 08:13:10,819 - DataModule - INFO - We ended with 8138 skipped examples and result 4504
+Ratio of skips is 0.6437272583451985
+⚠️  Please write down the amount of relationship classes being used: 313
