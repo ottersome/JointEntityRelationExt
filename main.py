@@ -5,7 +5,7 @@ import lightning as L
 import wandb
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.tuner.tuning import Tuner
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PretrainedConfig
 
 from entrel.data.datamodule import DataModule
 from entrel.models.CopyBoi import CopyAttentionBoi
@@ -15,6 +15,7 @@ if __name__ == "__main__":
     args = argfun()
     logger = setup_logger("main", INFO)
     L.seed_everything(args.seed)
+    meep = PretrainedConfig.from_pretrained(args.model)
 
     # Set Tokenizer
     logger.info("Setting up Tokenizer")
@@ -27,20 +28,20 @@ if __name__ == "__main__":
 
     # Create Model
     # Check if path exists
+    num_rels = len(data_module.metadata["relationships"])
     checkpoint_path = os.path.join(args.checkpoints, "model.ckpt")
-    if os.path.exists(checkpoint_path):
+    if os.path.exists(checkpoint_path) and not args.ignore_chkpnt:
         logger.info("📂 Loading Model from Checkpoint")
         model = CopyAttentionBoi.load_from_checkpoint(
+            num_rels,
             checkpoint_path,
-            # Pass Expected Arguments
             parent_model_name=args.model_name,
             lr=1e-5,
             dtype=args.precision,
-            useParentWeights=False,
         )
     else:
         logger.info("Loading Model from Scratch")
-        model = CopyAttentionBoi(args.model, useParentWeights=True)
+        model = CopyAttentionBoi(args.model)
     # Check memory footprint
     logger.info(f"Model's memory footprint {model.get_memory_footprint()}")
 

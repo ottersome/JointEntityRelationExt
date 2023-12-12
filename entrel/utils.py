@@ -17,6 +17,7 @@ def argfun():
     ap.add_argument("--dataset", default="NLG")
     ap.add_argument("--checkpoints", default="./checkpoints")
     ap.add_argument("--seed", default=420)
+    ap.add_argument("--ignore_chkpnt", action="store_false", default=True)
     ap.add_argument("--wandb", action="store_true")
     ap.add_argument("--wandb_project_name", default="JointEntRel_Extraction")
     ap.add_argument("--epochs", default=1)

@@ -1,10 +1,13 @@
+import json
 import os
 import re
 from logging import INFO
-from typing import List, Tuple
+from typing import List, Set, Tuple
 
 import lightning as L
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from datasets import get_dataset_split_names, load_dataset, load_dataset_builder
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -31,6 +34,7 @@ class DataModule(L.LightningDataModule):
         self.train_dataset = None
         self.test_dataset = None
         self.batch_size = batch_size
+        self.metadata = {}
 
     def prepare_data(self, tokenizer: PreTrainedTokenizer):
         # Load Stuff
@@ -42,13 +46,24 @@ class DataModule(L.LightningDataModule):
         ]
         if all(check):
             self.logger.info("📂 Loading cached dataset")
-            self.train_dataset = pd.read_parquet(self.cache_paths["train"])
-            self.test_dataset = pd.read_parquet(self.cache_paths["test"])
+            train_dataset_df = pd.read_parquet(self.cache_paths["train"])
+            test_dataset_df = pd.read_parquet(self.cache_paths["test"])
+            with open(os.path.join(self.cache_loc, "metadata.json"), "r") as f:
+                self.metadata = json.load(f)
+            self.logger.info(
+                f"We are considering {len(self.metadata['relationships'])} relationships"
+            )
+
         else:
             self.logger.info("🛠 No cached dataset foud. Will build from scratch...")
-            self.train_dataset, self.test_dataset, _ = self._load_raw_dataset(
+            train_dataset_df, test_dataset_df, _ = self._load_raw_dataset(
                 self.dataset, tokenizer
             )
+        # Datasets so far are pandas dataframes. Before converting to a list
+        # want to UNNEST column 'triplets':
+        # Now only select columns 'tokens' and 'triplets'. But as simply lists, not numpy
+        self.train_dataset = train_dataset_df.values.tolist()
+        self.test_dataset = test_dataset_df.values.tolist()
 
     # Overwrites
     def train_dataloader(self):
@@ -70,11 +85,12 @@ class DataModule(L.LightningDataModule):
 
     def parse_webnlg_ds(  # TODO: clean this method up
         self, ds, tokenizer: PreTrainedTokenizer, max_length=1024
-    ) -> List[Tuple]:  # HACK: remove ths hardcode max_length
+    ) -> Tuple[List[Tuple], Set[str]]:  # HACK: remove ths hardcode max_length
         result = []
         print("Done")
 
         skips = 0  # TEST: for statistics
+        unique_rels = set()
 
         bar = tqdm(total=len(ds), desc="Going through dataset")
         for row in ds:
@@ -103,14 +119,20 @@ class DataModule(L.LightningDataModule):
                         max_length=tokenizer.model_max_length,
                     )["input_ids"]
 
-                    fixed_triplets = self._fix_entity_for_copymechanism(
+                    fixed_triplets, rels = self._fix_entity_for_copymechanism(
                         text, dirty_triplets
                     )
+                    unique_rels = unique_rels.union(rels)
                     # Tokenize them and remove the outer stuff
                     if len(fixed_triplets[0]) == 0:
                         skips += 1
                         continue  # We didnt get any matches
-                    tokd_triplets = self._tokenize_triplets(fixed_triplets, tokenizer)
+                    tokd_triplets = self._tokenize_triplets_joint(
+                        fixed_triplets, tokenizer
+                    )
+                    assert isinstance(
+                        tokd_triplets[0], int
+                    ), f"The triplet looks like {tokd_triplets}"
                     result.append(
                         [
                             tokd_text,
@@ -125,9 +147,9 @@ class DataModule(L.LightningDataModule):
         self.logger.info(
             f"We ended with {skips} skipped examples and result {len(result)}\n"
             f"Ratio of skips is {skips/(len(result) + skips)}\n"
-            f"⚠️  Please write down the amount of relationship classes being used: {len(self.rel_dict.keys())}"
+            f"Amount of unique rels {unique_rels}"
         )
-        return result
+        return result, unique_rels
 
     def _load_raw_dataset(
         self,
@@ -135,8 +157,21 @@ class DataModule(L.LightningDataModule):
         tokenizer: PreTrainedTokenizer,
         encoder_max=512,
     ):
+        self.metadata = {}
+        self.unique_rels = set()
         dataset = None
+        dfs = {}
+        schema = pa.schema(
+            [
+                pa.field("tokens", pa.list_(pa.int64())),
+                pa.field("triplets", pa.list_(pa.int64())),
+                pa.field("ref_text", pa.string()),
+                pa.field("ref_raw_triples", pa.list_(pa.string())),
+                pa.field("ref_rels", pa.list_(pa.string())),
+            ]
+        )
         if dataset_type == DatasetInUse.NLG:
+            # Method provided by libraries
             dataset = load_dataset("web_nlg", "release_v3.0_en")
 
             train = dataset["train"]  # type:ignore
@@ -146,7 +181,8 @@ class DataModule(L.LightningDataModule):
             bois = {"train": train, "val": val, "test": test}
 
             for k, boi in bois.items():
-                boi = self.parse_webnlg_ds(boi, tokenizer)
+                boi, rels = self.parse_webnlg_ds(boi, tokenizer)
+                self.unique_rels = self.unique_rels.union(rels)
                 # Cache this as parquet
                 df = pd.DataFrame(
                     boi,
@@ -158,15 +194,27 @@ class DataModule(L.LightningDataModule):
                         "ref_rels",
                     ],
                 )
-                df.to_parquet(self.cache_paths[k])
+                dfs[k] = df
+                # df.to_parquet(self.cache_paths[k])
+                table = pa.Table.from_pandas(df, schema=schema)
+                pq.write_table(table, self.cache_paths[k])
 
-        return train, val, test  # type:ignore
+        # Store a JSon of all metadata:
+        self.metadata["relationships"] = list(self.rel_dict.keys())
+        metadata_js = json.dumps(self.metadata)
+        with open(os.path.join(self.cache_loc, "metadata.json"), "w") as f:
+            f.write(metadata_js)
+
+        # We make df out of train, val, test
+        train = pd.read_parquet(self.cache_paths["train"])
+        return dfs["train"], dfs["val"], dfs["test"]  # type:ignore
 
     def _fix_entity_for_copymechanism(
         self, sentence: str, dtriplets: List[str]
-    ) -> List[List]:
+    ) -> Tuple[List[List], Set[str]]:
         # Split the entity into words
         new_triplets = []
+        unique_rels = set()
         for i, triplet in enumerate(dtriplets):
             # NOTE: maybe try to use `tokenizer.tokenize` for more fine grained splitting ?
             trip = [t.strip() for t in triplet.split("|")]
@@ -179,13 +227,14 @@ class DataModule(L.LightningDataModule):
             best_e1 = find_consecutive_largest(sentence_words, e1)
             best_e2 = find_consecutive_largest(sentence_words, e2)
             if best_e1 == None or best_e2 == None:
-                return [[]]
+                return [[]], unique_rels
 
             # Add to Dictionary
             if rel not in self.rel_dict.keys():
                 self.rel_dict[rel] = len(self.rel_dict.keys())
                 self.local_rels.update(rel)
 
+            unique_rels.add(rel)
             new_triplet = [
                 " ".join(sentence_words[best_e1[0] : best_e1[-1] + 1]),
                 trip[1],
@@ -193,16 +242,30 @@ class DataModule(L.LightningDataModule):
             ]
 
             new_triplets.append(new_triplet)
-        return new_triplets
+        return new_triplets, unique_rels
+
+    def _tokenize_triplets_joint(self, triplets: List, tokenizer: PreTrainedTokenizer):
+        result = []
+        for i, triplet in enumerate(triplets):
+            if len(triplet) == 0:
+                continue
+            result += tokenizer.encode(triplet[0], add_special_tokens=False)
+            result.append(self.rel_dict[triplet[1]])
+            result += tokenizer.encode(triplet[2], add_special_tokens=False)
+            if i != len(triplets) - 1:
+                result += tokenizer.encode(",", add_special_tokens=False)
+        return result
 
     def _tokenize_triplets(self, triplets: List, tokenizer: PreTrainedTokenizer):
         new_ones = []
         for triplet in triplets:
+            if len(triplet) == 0:
+                continue
             new_ones.append(
                 [
-                    tokenizer.encode(triplet[0])[1:-1],
+                    tokenizer.encode(triplet[0], add_special_tokens=False),
                     [self.rel_dict[triplet[1]]],
-                    tokenizer.encode(triplet[2])[1:-1],
+                    tokenizer.encode(triplet[2], add_special_tokens=False)[1:-1],
                 ]
             )
         return new_ones

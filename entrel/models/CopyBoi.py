@@ -4,6 +4,7 @@ But just using a pretrained attention BART
 """
 
 from logging import INFO
+from pathlib import Path
 
 import lightning as L
 import torch
@@ -16,11 +17,11 @@ from ..utils import setup_logger
 class CopyAttentionBoi(L.LightningModule):
     def __init__(
         self,
-        amount_of_relations,
+        amount_of_relations: int,
         parent_model_name="facebook/bart-large",
         lr=1e-5,
         dtype=torch.float16,
-        useParentWeights=True,
+        useRemoteWeights=True,
     ):
         """
         Arguments
@@ -37,19 +38,33 @@ class CopyAttentionBoi(L.LightningModule):
 
         self.loss = NLLLoss()  # TODO: make sure this is alright
         # Create Configuration as per Parent
-        config = BartConfig.from_pretrained(parent_model_name)
+        self.bart_config = BartConfig.from_pretrained(parent_model_name)
 
-        if useParentWeights:
-            self.model = TripleBartWithCopyMechanism.from_pretrained(
-                parent_model_name,
-                config=config,
-                amount_of_relations=amount_of_relations,
-                use_parent_weights=True,
-            )
-        else:
-            self.model = TripleBartWithCopyMechanism(config, amount_of_relations, True)
+        if useRemoteWeights:
+            self.base = BartModel.from_pretrained(parent_model_name)
+        else:  # Only Load the Structure
+            self.base = BartModel(self.bart_config)
+
+        self.rel_head = Linear(self.bart_config.d_model, amount_of_relations)
+        self.indexing_head = Linear(
+            self.bart_config.d_model, self.config.max_position_embeddings
+        )
+        # config = BartConfig.from_pretrained(parent_model_name)
+        # if useRemoteWeights:
+        # self.model = TripleBartWithCopyMechanism.from_pretrained(
+        # parent_model_name,
+        # amount_of_relations,
+        # config=config,
+        # )
+        # else:
+        # self.model = TripleBartWithCopyMechanism(config, amount_of_relations)
+        # elif checkpoidnt_path_obj.exists():
+        # self.model = TripleBartWithCopyMechanism(config, amount_of_relations, True)
 
     def forward(self, x, attention_mask):
+        """
+        For inference
+        """
         return self.model(x, attention_mask=attention_mask)  # CHECK: is this correct?
 
     def training_step(self, batches):
@@ -68,18 +83,28 @@ class CopyAttentionBoi(L.LightningModule):
 
 
 class TripleBartWithCopyMechanism(BartModel):
-    def __init__(
-        self,
-        config: PretrainedConfig,
-        amount_of_relations,
-        use_parent_weights=True,
-    ):
+    def __init__(self, config: PretrainedConfig, amount_of_relations):
         super().__init__(config)
-        output_size = amount_of_relations + self.config.max_position_embeddings + 1
-        self.head = Linear(self.config.d_model, output_size)
+        self.head = Linear(config.d_model, amount_of_relations)
         # if not use_parent_weights:#Load from checkpoint #TODO: Load from checkpoint
 
     def forward(self, input_ids, attention_mask):
         h = self.model(input_ids)
         y = self.head(h)
         return y
+
+    @classmethod
+    def from_pretrained(
+        cls, pretrained_model_name_or_path, amount_of_relations, *model_args, **kwargs
+    ):
+        kwargs["amount_of_relatations"] = amount_of_relations
+        model = super(TripleBartWithCopyMechanism, cls).from_pretrained(
+            pretrained_model_name_or_path, *model_args, **kwargs
+        )
+        output_size = (
+            amount_of_relations + model.config.max_position_embeddings + 1
+        )  # 1 for ??
+        # Set new head
+        model.head = Linear(model.config.d_model, output_size)
+
+        return model
