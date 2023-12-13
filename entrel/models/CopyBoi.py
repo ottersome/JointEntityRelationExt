@@ -18,6 +18,7 @@ class CopyAttentionBoi(L.LightningModule):
     def __init__(
         self,
         amount_of_relations: int,
+        tokenizer,
         parent_model_name="facebook/bart-large",
         lr=1e-5,
         dtype=torch.float16,
@@ -34,6 +35,8 @@ class CopyAttentionBoi(L.LightningModule):
         """
         super().__init__()
 
+        self.tokenizer = tokenizer
+
         self.my_logger = setup_logger("CopyAttentionBoi", INFO)
 
         self.loss = NLLLoss()  # TODO: make sure this is alright
@@ -45,30 +48,52 @@ class CopyAttentionBoi(L.LightningModule):
         else:  # Only Load the Structure
             self.base = BartModel(self.bart_config)
 
+        assert isinstance(self.base, BartModel)
+        # Using `load_checkpoint` outside of the model would load the weights that are
+        # not yet loaded thus far.
         self.rel_head = Linear(self.bart_config.d_model, amount_of_relations)
         self.indexing_head = Linear(
             self.bart_config.d_model, self.config.max_position_embeddings
         )
-        # config = BartConfig.from_pretrained(parent_model_name)
-        # if useRemoteWeights:
-        # self.model = TripleBartWithCopyMechanism.from_pretrained(
-        # parent_model_name,
-        # amount_of_relations,
-        # config=config,
-        # )
-        # else:
-        # self.model = TripleBartWithCopyMechanism(config, amount_of_relations)
-        # elif checkpoidnt_path_obj.exists():
-        # self.model = TripleBartWithCopyMechanism(config, amount_of_relations, True)
 
-    def forward(self, x, attention_mask):
+    def forward(self, batchx, attention_mask):
         """
         For inference
         """
+        # Now We do the painful part of doing sequential inference
+        # TODO: do it overall
         return self.model(x, attention_mask=attention_mask)  # CHECK: is this correct?
 
-    def training_step(self, batches):
-        self.my_logger.info("")
+    def training_step(self, batches, batch_idx):
+        assert isinstance(self.model, BartModel)
+        self.my_logger.debug(f"Going through batch idx {batch_idx}")
+        inputs, target = batches
+        padding_token = self.tokenizer.pad_token_id
+        sep_token = self.tokenizer.sep_token
+
+        encoder_attn_mask = torch.ones_like(inputs)
+        encoder_attn_mask[inputs == padding_token] = 0
+        encoder_outputs, _, _ = self.base.encoder(inputs, encoder_attn_mask)
+        # TODO:  Create attention mask where padding tokens. Otherwise padding tokens dont work
+
+        decoder_attn_mask = torch.ones_like(target)
+        # TODO : We need to figureout how it is that the targets are batched up.( I guess we could batch them in preprocesing and also by the datamodule).
+        # We'll see when it complains
+        decoder_attn_mask[target == padding_token] = 0
+        decoder_hidden_outputs = self.base.decoder(target, encoder_outputs)
+
+        first_indices_of_pad = find_padding_indices(target, padding_token)
+        # Get Indices of Relationships
+        final_outputs = []
+        for batch in range(target.shape[1]):
+            batch_output = []
+            for element in range(first_indices_of_pad[batch]):
+                if element == 0 or target[batch, element - 1] == sep_token:
+                    output = self.rel_head(decoder_hidden_outputs[batch, element])
+                else:
+                    output = self.indexing_head(decoder_hidden_outputs[batch, element])
+            final_outputs.append(batch_output)
+
         yhat = self.model(batches)
         loss = self.loss(yhat)
         return loss
@@ -108,3 +133,14 @@ class TripleBartWithCopyMechanism(BartModel):
         model.head = Linear(model.config.d_model, output_size)
 
         return model
+
+
+def find_padding_indices(tensor, padding_token=0):
+    indices = []
+    for i in range(tensor.size(0)):
+        try:
+            index = (tensor[i] == padding_token).nonzero(as_tuple=True)[0][0]
+        except IndexError:  # no padding token in this row
+            index = -1
+        indices.append(index)
+    return indices

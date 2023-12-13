@@ -209,7 +209,7 @@ class DataModule(L.LightningDataModule):
         train = pd.read_parquet(self.cache_paths["train"])
         return dfs["train"], dfs["val"], dfs["test"]  # type:ignore
 
-    def _fix_entity_for_copymechanism(
+    def _fix_entity_for_copymechanism_0(
         self, sentence: str, dtriplets: List[str]
     ) -> Tuple[List[List], Set[str]]:
         # Split the entity into words
@@ -269,6 +269,44 @@ class DataModule(L.LightningDataModule):
                 ]
             )
         return new_ones
+
+    def fix_entity_for_copy_mechanism_1():
+        """
+        An alternate (and possibly final) approach to extracting triplets.
+        Sub-Obj are not tokenized, but rather given an index corresponding to input sentence.
+        """
+        # Split the entity into words
+        new_triplets = []
+        unique_rels = set()
+        for i, triplet in enumerate(dtriplets):
+            # NOTE: maybe try to use `tokenizer.tokenize` for more fine grained splitting ?
+            trip = [t.strip() for t in triplet.split("|")]
+            rel = trip[1]
+            e1 = re.split("_|\s", trip[0])
+            e2 = re.split("_|\s", trip[2])
+            sentence_words = re.split(" |,|\.", sentence)
+            sentence_words = [sw for sw in sentence_words if sw != ""]
+
+            best_e1 = find_consecutive_largest(sentence_words, e1)
+            best_e2 = find_consecutive_largest(sentence_words, e2)
+            if best_e1 == None or best_e2 == None:
+                return [[]], unique_rels
+
+            # Add to Dictionary
+            if rel not in self.rel_dict.keys():
+                self.rel_dict[rel] = len(self.rel_dict.keys())
+                self.local_rels.update(rel)
+
+            unique_rels.add(rel)
+            # Encode positions rather than actual tokens
+            new_triplet = [
+                range(best_e1[0], best_e1[-1] + 1),
+                trip[1],
+                range(best_e2[0], best_e2[-1] + 1),
+            ]
+
+            new_triplets.append(new_triplet)
+        return new_triplets, unique_rels
 
 
 def clean_string(str):

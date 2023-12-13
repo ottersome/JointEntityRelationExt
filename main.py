@@ -34,6 +34,7 @@ if __name__ == "__main__":
         logger.info("📂 Loading Model from Checkpoint")
         model = CopyAttentionBoi.load_from_checkpoint(
             num_rels,
+            tokenizer
             checkpoint_path,
             parent_model_name=args.model_name,
             lr=1e-5,
@@ -41,7 +42,7 @@ if __name__ == "__main__":
         )
     else:
         logger.info("Loading Model from Scratch")
-        model = CopyAttentionBoi(args.model)
+        model = CopyAttentionBoi(args.model, tokenizer)
     # Check memory footprint
     logger.info(f"Model's memory footprint {model.get_memory_footprint()}")
 
