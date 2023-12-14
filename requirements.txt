@@ -1,0 +1,7 @@
+lightning
+transformers
+pandas
+wandb
+pyarrow
+fastparquet
+datasets

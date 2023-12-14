@@ -8,6 +8,7 @@ import lightning as L
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+import torch
 from datasets import get_dataset_split_names, load_dataset, load_dataset_builder
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -18,12 +19,18 @@ from ..utils import DatasetInUse, setup_logger
 
 class DataModule(L.LightningDataModule):
     def __init__(
-        self, dataset: DatasetInUse, batch_size: int, cache_location="./.cache/"
+        self,
+        dataset: DatasetInUse,
+        batch_size: int,
+        tokenizer: PreTrainedTokenizer,
+        cache_location="./.cache/",
     ):
+        super().__init__()
         self.logger = setup_logger("DataModule", INFO)
         self.dataset = dataset
         self.rel_dict = {}  # Keeps indexes
         self.cache_loc = cache_location
+        self.tokenizer = tokenizer
         if not os.path.exists(self.cache_loc):
             os.makedirs(self.cache_loc)
         self.cache_paths = {
@@ -36,15 +43,20 @@ class DataModule(L.LightningDataModule):
         self.batch_size = batch_size
         self.metadata = {}
 
-    def prepare_data(self, tokenizer: PreTrainedTokenizer):
-        # Load Stuff
-        # dsf = DatasetFactory(self.dataset)
-        # Check if
-        check = [
+        # I do this more out of need honestly
+        self.pre_prepare_data()
+
+    def pre_prepare_data(self):
+        """
+        prepare_data is called by the Lightning framework.
+        We need to have metadata loaded before that though.
+        Thus this function. Obviously call this with only one process.
+        """
+        check_1 = [
             os.path.exists(loc) and os.path.isfile(loc)
             for loc in self.cache_paths.values()
-        ]
-        if all(check):
+        ] + [os.path.exists(os.path.join(self.cache_loc, "metadata.json"))]
+        if all(check_1):
             self.logger.info("📂 Loading cached dataset")
             train_dataset_df = pd.read_parquet(self.cache_paths["train"])
             test_dataset_df = pd.read_parquet(self.cache_paths["test"])
@@ -57,13 +69,23 @@ class DataModule(L.LightningDataModule):
         else:
             self.logger.info("🛠 No cached dataset foud. Will build from scratch...")
             train_dataset_df, test_dataset_df, _ = self._load_raw_dataset(
-                self.dataset, tokenizer
+                self.dataset, self.tokenizer
             )
         # Datasets so far are pandas dataframes. Before converting to a list
         # want to UNNEST column 'triplets':
         # Now only select columns 'tokens' and 'triplets'. But as simply lists, not numpy
-        self.train_dataset = train_dataset_df.values.tolist()
-        self.test_dataset = test_dataset_df.values.tolist()
+        self.train_dataset = train_dataset_df[["tokens", "triplets"]].values.tolist()
+        self.test_dataset = test_dataset_df[["tokens", "triplets"]].values.tolist()
+
+    def prepare_data(self):
+        # Load Stuff
+        needs_to_load_data = [
+            self.train_dataset == None,
+            self.test_dataset == None,
+            len(self.metadata) == 0,
+        ]
+        if any(needs_to_load_data):
+            self.pre_prepare_data()
 
     # Overwrites
     def train_dataloader(self):
@@ -73,6 +95,7 @@ class DataModule(L.LightningDataModule):
             self.train_dataset,  # type:ignore
             batch_size=self.batch_size,
             num_workers=12,
+            collate_fn=collate_fn,
         )
 
     # Overwrites
@@ -80,7 +103,10 @@ class DataModule(L.LightningDataModule):
         if self.test_dataset == None:
             raise ValueError("DataModule not prepared. Please first run prepare_data()")
         return DataLoader(
-            self.test_dataset, batch_size=self.batch_size, num_workers=12  # type:ignore
+            self.test_dataset,
+            batch_size=self.batch_size,
+            num_workers=12,
+            collate_fn=collate_fn,
         )
 
     def parse_webnlg_ds(  # TODO: clean this method up
@@ -91,6 +117,8 @@ class DataModule(L.LightningDataModule):
 
         skips = 0  # TEST: for statistics
         unique_rels = set()
+        # TODO: maybe make this variable be passed to the class
+        self.output_max_len = 256
 
         bar = tqdm(total=len(ds), desc="Going through dataset")
         for row in ds:
@@ -119,7 +147,7 @@ class DataModule(L.LightningDataModule):
                         max_length=tokenizer.model_max_length,
                     )["input_ids"]
 
-                    fixed_triplets, rels = self._fix_entity_for_copymechanism(
+                    fixed_triplets, rels = self._fix_entity_for_copymechanism_0(
                         text, dirty_triplets
                     )
                     unique_rels = unique_rels.union(rels)
@@ -130,9 +158,23 @@ class DataModule(L.LightningDataModule):
                     tokd_triplets = self._tokenize_triplets_joint(
                         fixed_triplets, tokenizer
                     )
-                    assert isinstance(
-                        tokd_triplets[0], int
-                    ), f"The triplet looks like {tokd_triplets}"
+
+                    # Add Padding to said triplets
+                    amnt_pad = self.output_max_len - len(tokd_triplets)
+                    tokd_triplets += [tokenizer.pad_token_id] * amnt_pad
+
+                    assert (
+                        amnt_pad > 0
+                    ), f"Padding assumptions are wrong.:{tokenizer.decode(tokd_triplets)}"
+
+                    assert (
+                        len(tokd_text) == tokenizer.model_max_length
+                    ), f" Tokenized Text of not proper length ({len(tokd_text)}):{tokenizer.decode(tokd_text)}"
+
+                    assert (
+                        len(tokd_triplets) == self.output_max_len
+                    ), f"Wrong length for tokd_triplets"
+
                     result.append(
                         [
                             tokd_text,
@@ -245,15 +287,17 @@ class DataModule(L.LightningDataModule):
         return new_triplets, unique_rels
 
     def _tokenize_triplets_joint(self, triplets: List, tokenizer: PreTrainedTokenizer):
-        result = []
+        result = [tokenizer.convert_token_to_ids("<s>")]
         for i, triplet in enumerate(triplets):
             if len(triplet) == 0:
                 continue
-            result += tokenizer.encode(triplet[0], add_special_tokens=False)
-            result.append(self.rel_dict[triplet[1]])
+            result += tokenizer.encode(triplet[0] + " ", add_special_tokens=False)
+            # result.append(self.rel_dict[triplet[1]])
+            result += tokenizer.encode(triplet[1] + " ", add_special_tokens=False)
             result += tokenizer.encode(triplet[2], add_special_tokens=False)
             if i != len(triplets) - 1:
                 result += tokenizer.encode(",", add_special_tokens=False)
+        result += tokenizer.convert_tokens_to_ids("</s>")
         return result
 
     def _tokenize_triplets(self, triplets: List, tokenizer: PreTrainedTokenizer):
@@ -270,7 +314,7 @@ class DataModule(L.LightningDataModule):
             )
         return new_ones
 
-    def fix_entity_for_copy_mechanism_1():
+    def fix_entity_for_copy_mechanism_1(self):
         """
         An alternate (and possibly final) approach to extracting triplets.
         Sub-Obj are not tokenized, but rather given an index corresponding to input sentence.
@@ -334,3 +378,10 @@ def find_consecutive_largest(sentence_words, entity_words):
     if len(best_shot) == 0:
         best_shot = None
     return best_shot
+
+
+def collate_fn(batch):
+    data, target = zip(*batch)
+    data = torch.Tensor(data).to(torch.long)
+    target = torch.Tensor(target).to(torch.long)
+    return data, target

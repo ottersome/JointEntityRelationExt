@@ -8,8 +8,15 @@ from pathlib import Path
 
 import lightning as L
 import torch
+import torch.nn.functional as F
 from torch.nn import Linear, NLLLoss
-from transformers import AutoModel, BartConfig, BartModel, PretrainedConfig
+from transformers import (
+    AutoModel,
+    BartConfig,
+    BartModel,
+    PretrainedConfig,
+    PreTrainedTokenizer,
+)
 
 from ..utils import setup_logger
 
@@ -18,7 +25,7 @@ class CopyAttentionBoi(L.LightningModule):
     def __init__(
         self,
         amount_of_relations: int,
-        tokenizer,
+        tokenizer: PreTrainedTokenizer,
         parent_model_name="facebook/bart-large",
         lr=1e-5,
         dtype=torch.float16,
@@ -51,18 +58,42 @@ class CopyAttentionBoi(L.LightningModule):
         assert isinstance(self.base, BartModel)
         # Using `load_checkpoint` outside of the model would load the weights that are
         # not yet loaded thus far.
-        self.rel_head = Linear(self.bart_config.d_model, amount_of_relations)
-        self.indexing_head = Linear(
-            self.bart_config.d_model, self.config.max_position_embeddings
+        self.copy_head = Linear(
+            self.bart_config.d_model, self.bart_config.d_model
+        )  # Encoder States Size x Decoder State Sizej
+        self.vocabulary_head = Linear(
+            self.bart_config.d_model, self.bart_config.vocab_size
         )
 
     def forward(self, batchx, attention_mask):
         """
-        For inference
+        For inference, also for guessing batch size
         """
         # Now We do the painful part of doing sequential inference
         # TODO: do it overall
-        return self.model(x, attention_mask=attention_mask)  # CHECK: is this correct?
+        padding_token = self.tokenizer.pad_token_id
+        attn_mask = torch.ones_like(batchx)
+        attn_mask[batchx == padding_token] = 0
+        encoder_states = self.base.encoder(batchx, attn_mask)
+
+        # Use decoder for inference
+        outputs = torch.full(
+            (batchx.shape[0], 1), self.tokenizer.convert_tokens_to_ids("<s>")
+        )
+        for i in range(batchx.shape[1]):
+            attn_mask = torch.ones_like(outputs)
+            attn_mask[outputs == padding_token] = 0
+            decoder_states = self.base.decoder(outputs, encoder_states, attn_mask)
+
+            # Pass Decoder States
+            probs = self._mixed_softmax(decoder_states)
+
+        return
+
+    def _mixed_softmax(self, encoder_states, decoder_states):
+        copy_scores = decoder_states @ F.relu(self.copy_head(encoder_states))
+
+        vocab_scores = self.vocabulary_head(decoder_states)
 
     def training_step(self, batches, batch_idx):
         assert isinstance(self.model, BartModel)
@@ -84,18 +115,10 @@ class CopyAttentionBoi(L.LightningModule):
 
         first_indices_of_pad = find_padding_indices(target, padding_token)
         # Get Indices of Relationships
-        final_outputs = []
-        for batch in range(target.shape[1]):
-            batch_output = []
-            for element in range(first_indices_of_pad[batch]):
-                if element == 0 or target[batch, element - 1] == sep_token:
-                    output = self.rel_head(decoder_hidden_outputs[batch, element])
-                else:
-                    output = self.indexing_head(decoder_hidden_outputs[batch, element])
-            final_outputs.append(batch_output)
 
         yhat = self.model(batches)
         loss = self.loss(yhat)
+
         return loss
 
     def configure_optimizers(self):

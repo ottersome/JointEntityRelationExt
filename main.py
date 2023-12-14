@@ -1,6 +1,7 @@
 import os
 from logging import INFO
 
+import debugpy
 import lightning as L
 import wandb
 from lightning.pytorch.loggers import WandbLogger
@@ -17,14 +18,20 @@ if __name__ == "__main__":
     L.seed_everything(args.seed)
     meep = PretrainedConfig.from_pretrained(args.model)
 
+    # If Using Debugpy then wait for connection
+    if args.debug:
+        logger.info("🐛 Waiting for Debugger")
+        debugpy.listen(("0.0.0.0", args.port))
+        debugpy.wait_for_client()
+        logger.info("🐛 Debugger Connected")
+
     # Set Tokenizer
     logger.info("Setting up Tokenizer")
     tokenizer = AutoTokenizer.from_pretrained(args.model)
 
     # Data Loader
     logger.info("Instantiating DataModule")
-    data_module = DataModule(args.dataset, batch_size=4)
-    data_module.prepare_data(tokenizer)
+    data_module = DataModule(args.dataset, batch_size=4, tokenizer=tokenizer)
 
     # Create Model
     # Check if path exists
@@ -34,7 +41,7 @@ if __name__ == "__main__":
         logger.info("📂 Loading Model from Checkpoint")
         model = CopyAttentionBoi.load_from_checkpoint(
             num_rels,
-            tokenizer
+            tokenizer,
             checkpoint_path,
             parent_model_name=args.model_name,
             lr=1e-5,
@@ -44,7 +51,7 @@ if __name__ == "__main__":
         logger.info("Loading Model from Scratch")
         model = CopyAttentionBoi(args.model, tokenizer)
     # Check memory footprint
-    logger.info(f"Model's memory footprint {model.get_memory_footprint()}")
+    # logger.info(f"Model's memory footprint {model.get_memory_footprint()}")
 
     # Do WandB Iinitalization
     if args.wandb:

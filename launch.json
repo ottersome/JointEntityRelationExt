@@ -1,6 +1,20 @@
 {
   "configurations": [
     {
+      "name": "Python: Remote Debug",
+      "type": "python",
+      "host": "127.0.0.1",
+      "request": "attach",
+      "port": 42021,
+      "subProcess": true,
+      "pathMappings": [
+        {
+          "localRoot": "${workspaceFolder}",
+          "remoteRoot": "/root/work"
+        }
+      ]
+    },
+    {
       "name": "main",
       "type": "python",
       "request": "launch",
@@ -8,7 +22,8 @@
       "python": "/home/ottersome/miniconda3/envs/research/bin/python",
       "stopOnEntry": false,
       "debugOptions": [],
-      "program": "${workspaceFolder}/main.py"
+      "program": "${workspaceFolder}/main.py",
+      "justMyCode": false
     }
   ]
 }

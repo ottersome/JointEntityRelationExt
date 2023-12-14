@@ -14,6 +14,8 @@ class DatasetInUse(Enum):
 
 def argfun():
     ap = ArgumentParser()
+    ap.add_argument("-d", "--debug", action="store_true", help="Use DebugPy")
+    ap.add_argument("-p", "--port", default=42021)
     ap.add_argument("--dataset", default="NLG")
     ap.add_argument("--checkpoints", default="./checkpoints")
     ap.add_argument("--seed", default=420)
