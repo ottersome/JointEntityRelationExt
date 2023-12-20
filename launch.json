@@ -5,7 +5,7 @@
       "type": "python",
       "host": "127.0.0.1",
       "request": "attach",
-      "port": 42021,
+      "port": 42019,
       "subProcess": true,
       "pathMappings": [
         {

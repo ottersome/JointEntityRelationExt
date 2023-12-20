@@ -5,6 +5,7 @@ from logging import INFO
 from typing import List, Set, Tuple
 
 import lightning as L
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -147,17 +148,20 @@ class DataModule(L.LightningDataModule):
                         max_length=tokenizer.model_max_length,
                     )["input_ids"]
 
-                    fixed_triplets, rels = self._fix_entity_for_copymechanism_0(
-                        text, dirty_triplets
+                    fixed_triplets, rels = self._get_final_encoding(
+                        text, dirty_triplets, self.tokenizer
                     )
                     unique_rels = unique_rels.union(rels)
                     # Tokenize them and remove the outer stuff
                     if len(fixed_triplets[0]) == 0:
                         skips += 1
                         continue  # We didnt get any matches
-                    tokd_triplets = self._tokenize_triplets_joint(
-                        fixed_triplets, tokenizer
-                    )
+                    # TODO: check if we are using tokenized or just ranges
+
+                    # tokd_triplets = self._tokenize_triplets_joint(
+                    #     fixed_triplets, tokenizer
+                    # )
+                    tokd_triplets = fixed_triplets
 
                     # Add Padding to said triplets
                     amnt_pad = self.output_max_len - len(tokd_triplets)
@@ -287,7 +291,7 @@ class DataModule(L.LightningDataModule):
         return new_triplets, unique_rels
 
     def _tokenize_triplets_joint(self, triplets: List, tokenizer: PreTrainedTokenizer):
-        result = [tokenizer.convert_token_to_ids("<s>")]
+        result = [tokenizer.convert_tokens_to_ids("<s>")]
         for i, triplet in enumerate(triplets):
             if len(triplet) == 0:
                 continue
@@ -314,7 +318,9 @@ class DataModule(L.LightningDataModule):
             )
         return new_ones
 
-    def fix_entity_for_copy_mechanism_1(self):
+    def _fix_entity_for_copymechanism_1(
+        self, sentence: str, dtriplets: List[str]
+    ) -> Tuple[List[List], Set[str]]:
         """
         An alternate (and possibly final) approach to extracting triplets.
         Sub-Obj are not tokenized, but rather given an index corresponding to input sentence.
@@ -343,18 +349,65 @@ class DataModule(L.LightningDataModule):
 
             unique_rels.add(rel)
             # Encode positions rather than actual tokens
-            new_triplet = [
-                range(best_e1[0], best_e1[-1] + 1),
-                trip[1],
-                range(best_e2[0], best_e2[-1] + 1),
-            ]
+            new_triplet = [self.rel_dict[rel]]
+            new_triplet += (-1 * (1 + np.arange(best_e1[0], best_e1[-1] + 1))).tolist()
+            new_triplet += (-1 * (1 + np.arange(best_e2[0], best_e2[-1] + 1))).tolist()
+            # "Flatten the whole list):
+
+            new_triplets.append(new_triplet)
+        return new_triplets, unique_rels
+
+    def _get_final_encoding(
+        self, sentence: str, dtriplets: List[str], tokenizer: PreTrainedTokenizer
+    ) -> Tuple[List[List], Set[str]]:
+        """
+        An alternate (and possibly final) approach to extracting triplets.
+        Sub-Obj are not tokenized, but rather given an index corresponding to input sentence.
+        """
+        # Split the entity into words
+        new_triplets = []
+        unique_rels = set()
+        for i, triplet in enumerate(dtriplets):
+            # NOTE: maybe try to use `tokenizer.tokenize` for more fine grained splitting ?
+            # Replace _ with " "
+            triplet = clean_string(triplet)
+            sentence = clean_string(sentence)
+
+            trip = [t.strip() for t in triplet.split("|")]
+            rel = trip[1]
+            e1 = tokenizer.encode(trip[0], add_special_tokens=False)
+            e2 = tokenizer.encode(trip[2], add_special_tokens=False)
+            sentence_words = tokenizer.encode(sentence)
+
+            best_e1 = find_consecutive_largest(sentence_words, e1)
+            best_e2 = find_consecutive_largest(sentence_words, e2)
+            if best_e1 == None or best_e2 == None:
+                return [[]], unique_rels
+
+            # Add to Dictionary
+            if rel not in self.rel_dict.keys():
+                self.rel_dict[rel] = len(self.rel_dict.keys())
+                self.local_rels.update(rel)
+
+            unique_rels.add(rel)
+            # Encode positions rather than actual tokens
+            new_triplet = [self.rel_dict[rel]]
+            new_triplet += (-1 * (1 + np.arange(best_e1[0], best_e1[-1] + 1))).tolist()
+            new_triplet += (-1 * (1 + np.arange(best_e2[0], best_e2[-1] + 1))).tolist()
+            # "Flatten the whole list):
 
             new_triplets.append(new_triplet)
         return new_triplets, unique_rels
 
 
 def clean_string(str):
-    return str.replace('"', "").replace("'", "").replace(",", "").replace(".", "")
+    return (
+        str.replace('"', "")
+        .replace("'", "")
+        .replace(",", "")
+        .replace(".", "")
+        .replace("_", " ")
+    )
 
 
 def find_consecutive_largest(sentence_words, entity_words):

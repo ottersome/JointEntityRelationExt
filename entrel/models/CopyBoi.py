@@ -8,6 +8,7 @@ from pathlib import Path
 
 import lightning as L
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Linear, NLLLoss
 from transformers import (
@@ -30,6 +31,7 @@ class CopyAttentionBoi(L.LightningModule):
         lr=1e-5,
         dtype=torch.float16,
         useRemoteWeights=True,
+        beam_width=10,
     ):
         """
         Arguments
@@ -43,6 +45,7 @@ class CopyAttentionBoi(L.LightningModule):
         super().__init__()
 
         self.tokenizer = tokenizer
+        self.beam_width = beam_width
 
         self.my_logger = setup_logger("CopyAttentionBoi", INFO)
 
@@ -61,39 +64,83 @@ class CopyAttentionBoi(L.LightningModule):
         self.copy_head = Linear(
             self.bart_config.d_model, self.bart_config.d_model
         )  # Encoder States Size x Decoder State Sizej
-        self.vocabulary_head = Linear(
-            self.bart_config.d_model, self.bart_config.vocab_size
-        )
+        self.relationship_head = Linear(self.bart_config.d_model, amount_of_relations)
 
     def forward(self, batchx, attention_mask):
         """
         For inference, also for guessing batch size
         """
-        # Now We do the painful part of doing sequential inference
-        # TODO: do it overall
+        # Check if it is training
         padding_token = self.tokenizer.pad_token_id
         attn_mask = torch.ones_like(batchx)
         attn_mask[batchx == padding_token] = 0
         encoder_states = self.base.encoder(batchx, attn_mask)
 
         # Use decoder for inference
-        outputs = torch.full(
-            (batchx.shape[0], 1), self.tokenizer.convert_tokens_to_ids("<s>")
-        )
-        for i in range(batchx.shape[1]):
-            attn_mask = torch.ones_like(outputs)
-            attn_mask[outputs == padding_token] = 0
-            decoder_states = self.base.decoder(outputs, encoder_states, attn_mask)
-
-            # Pass Decoder States
-            probs = self._mixed_softmax(decoder_states)
+        if self.traning:
+            self._autoregressive_decoder(encoder_states)
 
         return
 
-    def _mixed_softmax(self, encoder_states, decoder_states):
+    def _autoregressive_decoder(self, encoder_states, decoder: nn.Module):
+        # Start the memory
+        outputs = torch.full(
+            (batchx.shape[0], 1), self.tokenizer.convert_tokens_to_ids("<s>")
+        )
+        self._beamsearch(outputs, decoder)
+
+    def _mixed_softmax(self, encoder_states, decoder_states) -> torch.Tensor:
+        # CHECK: Will likely have to do bmm here to consider batches
         copy_scores = decoder_states @ F.relu(self.copy_head(encoder_states))
 
-        vocab_scores = self.vocabulary_head(decoder_states)
+        rel_scores = self.vocabulary_head(decoder_states)
+        concat = torch.cat((copy_scores, rel_scores), dim=1)
+        return concat
+
+    def _beamsearch(
+        self,
+        initial_states: torch.Tensor,
+        encoder_states: torch.Tensor,
+        decoder: nn.Module,
+        beam_width: int,
+    ):
+        # We keep topk paths as such:
+        batch_size = initial.states.shape[0]
+        pad_token = self.tokenizer.pad_token_id
+        encoder_attn_mask = torch.ones_like(encoder_states)
+        encoder_attn_mask[encoder_states == pad_token] = 0
+
+        # Initiation
+        # (batch_size x beam width) x (sequence lengt)
+        # Initial states is just (batch_size) x (sequence length)
+        # we want to repeat sequences in a new dimension 1 for (beam_width)
+        cur_state = torch.repeat_interleave(initial_states, beam_width, dim=0)
+
+        cur_seq_length = 1
+        for s in decoder.max_seq_length:
+            cs_tensor = torch.tensor(cur_sequences)
+            cs_attn_mask = cs_tensor.new_ones()
+            cs_attn_mask[cs_tensor == pad_token] = 0
+            decoder_states = decoder(
+                input_ids=cs_tensor,
+                attention_mask=cs_attn_mask,
+                encoder_hidden_states=encoder_states,
+                encoder_attention_mask=encoder_attn_mask,
+            )
+            probabilities = self._mixed_softmax(encoder_states, decoder_states)
+
+            top_p, top_i = torch.topk(probabilities, beam_width)
+            top_i = top_i.view(batch_size, beam_width, beam_width, 1).unsqueeze(-1)
+            # cur_sate is (batch_size x beam_width ) x (sequence length) in shape
+            # probabilities are (batch_size x beam_width) x (beam_width)
+            # We want a cartesian product  only of matching indices on (batch_size x beam_width)
+            new_view = cur_state.view(batch_size, beam_width, cur_seq_length)
+            expanded_view = new_view.unsqueeze(2).expand(-1, -1, beam_width, -1)
+            candidates = torch.cat((expanded_view, top_i), dim=-1)
+
+            # Make it back into (batch_size) x ()
+            cur_seq_length += 1
+        return
 
     def training_step(self, batches, batch_idx):
         assert isinstance(self.model, BartModel)
