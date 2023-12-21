@@ -11,13 +11,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Linear, NLLLoss
-from transformers import (
-    AutoModel,
-    BartConfig,
-    BartModel,
-    PretrainedConfig,
-    PreTrainedTokenizer,
-)
+from transformers import (AutoModel, BartConfig, BartModel, PretrainedConfig,
+                          PreTrainedTokenizer)
 
 from ..utils import setup_logger
 
@@ -56,7 +51,7 @@ class CopyAttentionBoi(L.LightningModule):
         if useRemoteWeights:
             self.base = BartModel.from_pretrained(parent_model_name)
         else:  # Only Load the Structure
-            self.base = BartModel(self.bart_config)
+            self.base = BartModel(self.bart_config) # type: ignore
 
         assert isinstance(self.base, BartModel)
         # Using `load_checkpoint` outside of the model would load the weights that are
@@ -74,20 +69,22 @@ class CopyAttentionBoi(L.LightningModule):
         padding_token = self.tokenizer.pad_token_id
         attn_mask = torch.ones_like(batchx)
         attn_mask[batchx == padding_token] = 0
-        encoder_states = self.base.encoder(batchx, attn_mask)
+        encoder_states = self.base.encoder(batchx, attn_mask) # type: ignore
 
         # Use decoder for inference
-        if self.traning:
+        if not self.traning:
             self._autoregressive_decoder(encoder_states)
+        else:
+            pass #TODO: write teacher-forcing method here
 
         return
 
-    def _autoregressive_decoder(self, encoder_states, decoder: nn.Module):
+    def _autoregressive_decoder(self, encoder_states):
         # Start the memory
         outputs = torch.full(
-            (batchx.shape[0], 1), self.tokenizer.convert_tokens_to_ids("<s>")
+            (encoder_states.shape[0], 1), int(self.tokenizer.convert_tokens_to_ids("<s>"))
         )
-        self._beamsearch(outputs, decoder)
+        self._beamsearch(encoder_states, outputs)
 
     def _mixed_softmax(self, encoder_states, decoder_states) -> torch.Tensor:
         # CHECK: Will likely have to do bmm here to consider batches
@@ -99,13 +96,11 @@ class CopyAttentionBoi(L.LightningModule):
 
     def _beamsearch(
         self,
-        initial_states: torch.Tensor,
         encoder_states: torch.Tensor,
-        decoder: nn.Module,
-        beam_width: int,
+        initial_states: torch.Tensor,
     ):
         # We keep topk paths as such:
-        batch_size = initial.states.shape[0]
+        batch_size = initial_states.shape[0]
         pad_token = self.tokenizer.pad_token_id
         encoder_attn_mask = torch.ones_like(encoder_states)
         encoder_attn_mask[encoder_states == pad_token] = 0
@@ -114,14 +109,16 @@ class CopyAttentionBoi(L.LightningModule):
         # (batch_size x beam width) x (sequence lengt)
         # Initial states is just (batch_size) x (sequence length)
         # we want to repeat sequences in a new dimension 1 for (beam_width)
-        cur_state = torch.repeat_interleave(initial_states, beam_width, dim=0)
+        cur_state = torch.repeat_interleave(initial_states, self.beam_width, dim=0)
 
         cur_seq_length = 1
-        for s in decoder.max_seq_length:
+        cur_sequences = initial_states
+        for s in self.decoder.max_seq_length:
+            
             cs_tensor = torch.tensor(cur_sequences)
             cs_attn_mask = cs_tensor.new_ones()
             cs_attn_mask[cs_tensor == pad_token] = 0
-            decoder_states = decoder(
+            decoder_states = self.decoder(
                 input_ids=cs_tensor,
                 attention_mask=cs_attn_mask,
                 encoder_hidden_states=encoder_states,
@@ -129,21 +126,23 @@ class CopyAttentionBoi(L.LightningModule):
             )
             probabilities = self._mixed_softmax(encoder_states, decoder_states)
 
-            top_p, top_i = torch.topk(probabilities, beam_width)
-            top_i = top_i.view(batch_size, beam_width, beam_width, 1).unsqueeze(-1)
+            top_p, top_i = torch.topk(probabilities, self.beam_width)
+            top_i = top_i.view(batch_size, self.beam_width, self.beam_width, 1).unsqueeze(-1)
             # cur_sate is (batch_size x beam_width ) x (sequence length) in shape
             # probabilities are (batch_size x beam_width) x (beam_width)
             # We want a cartesian product  only of matching indices on (batch_size x beam_width)
-            new_view = cur_state.view(batch_size, beam_width, cur_seq_length)
-            expanded_view = new_view.unsqueeze(2).expand(-1, -1, beam_width, -1)
+            new_view = cur_state.view(batch_size, self.beam_width, cur_seq_length)
+            expanded_view = new_view.unsqueeze(2).expand(-1, -1, self.beam_width, -1)
             candidates = torch.cat((expanded_view, top_i), dim=-1)
+
+            completed_bool_tape = [ for ]
 
             # Make it back into (batch_size) x ()
             cur_seq_length += 1
         return
 
     def training_step(self, batches, batch_idx):
-        assert isinstance(self.model, BartModel)
+        assert isinstance(self.base, BartModel)
         self.my_logger.debug(f"Going through batch idx {batch_idx}")
         inputs, target = batches
         padding_token = self.tokenizer.pad_token_id
@@ -163,7 +162,7 @@ class CopyAttentionBoi(L.LightningModule):
         first_indices_of_pad = find_padding_indices(target, padding_token)
         # Get Indices of Relationships
 
-        yhat = self.model(batches)
+        yhat = self.base(batches)
         loss = self.loss(yhat)
 
         return loss

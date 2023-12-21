@@ -185,7 +185,6 @@ class DataModule(L.LightningDataModule):
                             tokd_triplets,
                             text,
                             dirty_triplets,
-                            list(self.local_rels),
                         ]
                     )
             bar.update(1)
@@ -212,7 +211,7 @@ class DataModule(L.LightningDataModule):
                 pa.field("tokens", pa.list_(pa.int64())),
                 pa.field("triplets", pa.list_(pa.int64())),
                 pa.field("ref_text", pa.string()),
-                pa.field("ref_raw_triples", pa.list_(pa.string())),
+                pa.field("ref_raw_triplets", pa.list_(pa.string())),
                 pa.field("ref_rels", pa.list_(pa.string())),
             ]
         )
@@ -237,7 +236,6 @@ class DataModule(L.LightningDataModule):
                         "triplets",
                         "ref_text",
                         "ref_raw_triples",
-                        "ref_rels",
                     ],
                 )
                 dfs[k] = df
@@ -367,8 +365,8 @@ class DataModule(L.LightningDataModule):
         # Split the entity into words
         new_triplets = []
         unique_rels = set()
-        if len(dtriplets) > 1:
-            print("Lets go")
+        # if len(dtriplets) > 1:
+        #     print("Lets go")
 
         for i, triplet in enumerate(dtriplets):
             # NOTE: maybe try to use `tokenizer.tokenize` for more fine grained splitting ?
@@ -388,8 +386,9 @@ class DataModule(L.LightningDataModule):
 
             best_e1 = find_consecutive_largest(sentence_words, e1)
             best_e2 = find_consecutive_largest(sentence_words, e2)
+
             if best_e1 == None or best_e2 == None:
-                return [[]], unique_rels
+                return [], unique_rels
 
             # Add to Dictionary
             if rel not in self.rel_dict.keys():

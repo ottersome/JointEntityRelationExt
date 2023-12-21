@@ -41,16 +41,24 @@ if __name__ == "__main__":
     if os.path.exists(checkpoint_path) and not args.ignore_chkpnt:
         logger.info("📂 Loading Model from Checkpoint")
         model = CopyAttentionBoi.load_from_checkpoint(
+            checkpoint_path,
             num_rels,
             tokenizer,
-            checkpoint_path,
-            parent_model_name=args.model_name,
+            parent_model_name=args.model,
             lr=1e-5,
             dtype=args.precision,
         )
     else:
         logger.info("Loading Model from Scratch")
-        model = CopyAttentionBoi(args.model, tokenizer)
+        model = CopyAttentionBoi(
+            num_rels,
+            tokenizer,
+            parent_model_name=args.model,
+            lr=1e-5,
+            dtype=args.precision,
+            useRemoteWeights=False,
+            beam_width=10,
+        )
     # Check memory footprint
     # logger.info(f"Model's memory footprint {model.get_memory_footprint()}")
 
