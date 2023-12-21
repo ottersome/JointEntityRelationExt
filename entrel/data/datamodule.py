@@ -153,7 +153,7 @@ class DataModule(L.LightningDataModule):
                     )
                     unique_rels = unique_rels.union(rels)
                     # Tokenize them and remove the outer stuff
-                    if len(fixed_triplets[0]) == 0:
+                    if len(fixed_triplets) == 0:
                         skips += 1
                         continue  # We didnt get any matches
                     # TODO: check if we are using tokenized or just ranges
@@ -367,6 +367,9 @@ class DataModule(L.LightningDataModule):
         # Split the entity into words
         new_triplets = []
         unique_rels = set()
+        if len(dtriplets) > 1:
+            print("Lets go")
+
         for i, triplet in enumerate(dtriplets):
             # NOTE: maybe try to use `tokenizer.tokenize` for more fine grained splitting ?
             # Replace _ with " "
@@ -375,8 +378,12 @@ class DataModule(L.LightningDataModule):
 
             trip = [t.strip() for t in triplet.split("|")]
             rel = trip[1]
-            e1 = tokenizer.encode(trip[0], add_special_tokens=False)
-            e2 = tokenizer.encode(trip[2], add_special_tokens=False)
+            e1 = tokenizer.encode(
+                trip[0], add_special_tokens=False, is_split_into_words=True
+            )
+            e2 = tokenizer.encode(
+                trip[2], add_special_tokens=False, is_split_into_words=True
+            )
             sentence_words = tokenizer.encode(sentence)
 
             best_e1 = find_consecutive_largest(sentence_words, e1)
@@ -391,12 +398,17 @@ class DataModule(L.LightningDataModule):
 
             unique_rels.add(rel)
             # Encode positions rather than actual tokens
-            new_triplet = [self.rel_dict[rel]]
-            new_triplet += (-1 * (1 + np.arange(best_e1[0], best_e1[-1] + 1))).tolist()
-            new_triplet += (-1 * (1 + np.arange(best_e2[0], best_e2[-1] + 1))).tolist()
+            # new_triplet = [self.rel_dict[rel]]
+            # new_triplet += (-1 * (1 + np.arange(best_e1[0], best_e1[-1] + 1))).tolist()
+            # new_triplet += (-1 * (1 + np.arange(best_e2[0], best_e2[-1] + 1))).tolist()
+            # new_triplets.append(new_triplet)
+
+            new_triplets += [self.rel_dict[rel]]
+            # Multiplying by -1 will allow us to do a copy-vs-relationship mask later when learning
+            new_triplets += (-1 * (1 + np.arange(best_e1[0], best_e1[-1] + 1))).tolist()
+            new_triplets += (-1 * (1 + np.arange(best_e2[0], best_e2[-1] + 1))).tolist()
             # "Flatten the whole list):
 
-            new_triplets.append(new_triplet)
         return new_triplets, unique_rels
 
 

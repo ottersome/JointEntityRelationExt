@@ -6,7 +6,7 @@ import lightning as L
 import wandb
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.tuner.tuning import Tuner
-from transformers import AutoTokenizer, PretrainedConfig
+from transformers import AutoTokenizer, BartTokenizer, PretrainedConfig
 
 from entrel.data.datamodule import DataModule
 from entrel.models.CopyBoi import CopyAttentionBoi
@@ -27,7 +27,8 @@ if __name__ == "__main__":
 
     # Set Tokenizer
     logger.info("Setting up Tokenizer")
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    # tokenizer = AutoTokenizer.from_pretrained(args.model, add_prefix_space=True)
+    tokenizer = BartTokenizer.from_pretrained(args.model, add_prefix_space=True)
 
     # Data Loader
     logger.info("Instantiating DataModule")
