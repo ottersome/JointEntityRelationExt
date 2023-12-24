@@ -11,8 +11,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import Linear, NLLLoss
-from transformers import (AutoModel, BartConfig, BartModel, PretrainedConfig,
-                          PreTrainedTokenizer)
+from transformers import (
+    AutoModel,
+    BartConfig,
+    BartModel,
+    PretrainedConfig,
+    PreTrainedTokenizer,
+)
 
 from ..utils import setup_logger
 
@@ -51,7 +56,7 @@ class CopyAttentionBoi(L.LightningModule):
         if useRemoteWeights:
             self.base = BartModel.from_pretrained(parent_model_name)
         else:  # Only Load the Structure
-            self.base = BartModel(self.bart_config) # type: ignore
+            self.base = BartModel(self.bart_config)  # type: ignore
 
         assert isinstance(self.base, BartModel)
         # Using `load_checkpoint` outside of the model would load the weights that are
@@ -69,20 +74,21 @@ class CopyAttentionBoi(L.LightningModule):
         padding_token = self.tokenizer.pad_token_id
         attn_mask = torch.ones_like(batchx)
         attn_mask[batchx == padding_token] = 0
-        encoder_states = self.base.encoder(batchx, attn_mask) # type: ignore
+        encoder_states = self.base.encoder(batchx, attn_mask)  # type: ignore
 
         # Use decoder for inference
         if not self.traning:
             self._autoregressive_decoder(encoder_states)
         else:
-            pass #TODO: write teacher-forcing method here
+            pass  # TODO: write teacher-forcing method here
 
         return
 
     def _autoregressive_decoder(self, encoder_states):
         # Start the memory
         outputs = torch.full(
-            (encoder_states.shape[0], 1), int(self.tokenizer.convert_tokens_to_ids("<s>"))
+            (encoder_states.shape[0], 1),
+            int(self.tokenizer.convert_tokens_to_ids("<s>")),
         )
         self._beamsearch(encoder_states, outputs)
 
@@ -114,20 +120,22 @@ class CopyAttentionBoi(L.LightningModule):
         cur_seq_length = 1
         cur_sequences = initial_states
         for s in self.decoder.max_seq_length:
-            
             cs_tensor = torch.tensor(cur_sequences)
             cs_attn_mask = cs_tensor.new_ones()
             cs_attn_mask[cs_tensor == pad_token] = 0
-            decoder_states = self.decoder(
+
+            decoder_batch = self.decoder(
                 input_ids=cs_tensor,
                 attention_mask=cs_attn_mask,
                 encoder_hidden_states=encoder_states,
                 encoder_attention_mask=encoder_attn_mask,
             )
-            probabilities = self._mixed_softmax(encoder_states, decoder_states)
+            probabilities = self._mixed_softmax(encoder_states, decoder_batch)
 
             top_p, top_i = torch.topk(probabilities, self.beam_width)
-            top_i = top_i.view(batch_size, self.beam_width, self.beam_width, 1).unsqueeze(-1)
+            top_i = top_i.view(
+                batch_size, self.beam_width, self.beam_width, 1
+            ).unsqueeze(-1)
             # cur_sate is (batch_size x beam_width ) x (sequence length) in shape
             # probabilities are (batch_size x beam_width) x (beam_width)
             # We want a cartesian product  only of matching indices on (batch_size x beam_width)
@@ -135,7 +143,7 @@ class CopyAttentionBoi(L.LightningModule):
             expanded_view = new_view.unsqueeze(2).expand(-1, -1, self.beam_width, -1)
             candidates = torch.cat((expanded_view, top_i), dim=-1)
 
-            completed_bool_tape = [ for ]
+            # completed_bool_tape = [ for ]
 
             # Make it back into (batch_size) x ()
             cur_seq_length += 1
@@ -150,17 +158,38 @@ class CopyAttentionBoi(L.LightningModule):
 
         encoder_attn_mask = torch.ones_like(inputs)
         encoder_attn_mask[inputs == padding_token] = 0
-        encoder_outputs, _, _ = self.base.encoder(inputs, encoder_attn_mask)
+        encoder_outputs = self.base.encoder(inputs, encoder_attn_mask)
+        encoder_hidden_states = encoder_outputs.last_hidden_state
         # TODO:  Create attention mask where padding tokens. Otherwise padding tokens dont work
+
+        # Transform target to a format that is suitable
+        # target is (batch_size) x (sequence_length)
+        #   contains negated inds referencing indices to copy from decoder input
+        #   positive ints are for relationships themselves.
+        for b in range(target.shape[0]):
+            mask = target[b, :] < 0
+            indices = -1 * target[b, mask]
+            replacements = inputs[b, indices]
+            target[b, mask] = replacements
+            # offset relationships by size of vocabulary
+            target[b, ~mask] += self.tokenizer.vocab_size
 
         decoder_attn_mask = torch.ones_like(target)
         # TODO : We need to figureout how it is that the targets are batched up.( I guess we could batch them in preprocesing and also by the datamodule).
         # We'll see when it complains
         decoder_attn_mask[target == padding_token] = 0
-        decoder_hidden_outputs = self.base.decoder(target, encoder_outputs)
+        decoder_hidden_outputs = self.base.decoder(
+            target, decoder_attn_mask, encoder_hidden_states, encoder_attn_mask
+        )
 
-        first_indices_of_pad = find_padding_indices(target, padding_token)
-        # Get Indices of Relationships
+        mixed_probabilities = self._mixed_softmax(
+            encoder_outputs, decoder_hidden_outputs
+        )
+        # first_indices_of_pad = find_padding_indices(target, padding_token)
+
+        # Massage the indices
+        copy_mask = batch_idx < 0
+        # Use Copy to obtain a tensor
 
         yhat = self.base(batches)
         loss = self.loss(yhat)

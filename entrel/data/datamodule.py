@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from enum import Enum
 from logging import INFO
 from typing import List, Set, Tuple
 
@@ -16,6 +17,14 @@ from tqdm import tqdm
 from transformers import PreTrainedTokenizer
 
 from ..utils import DatasetInUse, setup_logger
+
+
+# Create Enum of Token Types
+# TODO: move this to a more universal location, like utils
+class TokenType(Enum):
+    NORMAL = 0
+    COPY = 1
+    RELATIONSHIP = 2
 
 
 class DataModule(L.LightningDataModule):
@@ -212,7 +221,6 @@ class DataModule(L.LightningDataModule):
                 pa.field("triplets", pa.list_(pa.int64())),
                 pa.field("ref_text", pa.string()),
                 pa.field("ref_raw_triplets", pa.list_(pa.string())),
-                pa.field("ref_rels", pa.list_(pa.string())),
             ]
         )
         if dataset_type == DatasetInUse.NLG:
@@ -235,7 +243,7 @@ class DataModule(L.LightningDataModule):
                         "tokens",
                         "triplets",
                         "ref_text",
-                        "ref_raw_triples",
+                        "ref_raw_triplets",
                     ],
                 )
                 dfs[k] = df
@@ -361,8 +369,12 @@ class DataModule(L.LightningDataModule):
         """
         An alternate (and possibly final) approach to extracting triplets.
         Sub-Obj are not tokenized, but rather given an index corresponding to input sentence.
+        Note
+        ----
+            token_ids_types is to distinguish between: copy, relationship, and normal (vocab) tokens
         """
         # Split the entity into words
+        token_ids_types = []
         new_triplets = []
         unique_rels = set()
         # if len(dtriplets) > 1:
@@ -402,12 +414,17 @@ class DataModule(L.LightningDataModule):
             # new_triplet += (-1 * (1 + np.arange(best_e2[0], best_e2[-1] + 1))).tolist()
             # new_triplets.append(new_triplet)
 
+            token_ids_types = [TokenType.RELATIONSHIP]
             new_triplets += [self.rel_dict[rel]]
+            length_sofar = len(new_triplets)
             # Multiplying by -1 will allow us to do a copy-vs-relationship mask later when learning
             new_triplets += (-1 * (1 + np.arange(best_e1[0], best_e1[-1] + 1))).tolist()
+            token_ids_types += [TokenType.COPY] * (len(new_triplets) - length_sofar)
+            length_sofar = len(new_triplets)
+            token_ids_types += tokenizer.convert_tokens_to_ids(", ")  # type: ignore
             new_triplets += (-1 * (1 + np.arange(best_e2[0], best_e2[-1] + 1))).tolist()
+            token_ids_types += [TokenType.COPY] * (len(new_triplets) - length_sofar)
             # "Flatten the whole list):
-
         return new_triplets, unique_rels
 
 
