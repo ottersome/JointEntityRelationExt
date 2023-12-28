@@ -12,6 +12,12 @@ class DatasetInUse(Enum):
     NYC = 1
 
 
+class TokenType(Enum):
+    NORMAL = 0
+    COPY = 1
+    RELATIONSHIP = 2
+
+
 def argfun():
     ap = ArgumentParser()
     ap.add_argument("-d", "--debug", action="store_true", help="Use DebugPy")

@@ -16,15 +16,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer
 
-from ..utils import DatasetInUse, setup_logger
-
-
-# Create Enum of Token Types
-# TODO: move this to a more universal location, like utils
-class TokenType(Enum):
-    NORMAL = 0
-    COPY = 1
-    RELATIONSHIP = 2
+from ..utils import DatasetInUse, TokenType, setup_logger
 
 
 class DataModule(L.LightningDataModule):
@@ -432,7 +424,7 @@ class DataModule(L.LightningDataModule):
             length_sofar = cur_len()
 
             # Add Copy Subject 1
-            new_triplets += (-1 * (1 + np.arange(best_e1[0], best_e1[-1] + 1))).tolist()
+            new_triplets += np.arange(best_e1[0], best_e1[-1] + 1).tolist()
             token_ids_types += [TokenType.COPY.value] * (cur_len() - length_sofar)
             length_sofar = cur_len()
 
@@ -442,7 +434,7 @@ class DataModule(L.LightningDataModule):
             length_sofar = cur_len()
 
             # Add Copy Subject 2
-            new_triplets += (-1 * (1 + np.arange(best_e2[0], best_e2[-1] + 1))).tolist()
+            new_triplets += np.arange(best_e2[0], best_e2[-1] + 1).tolist()
             token_ids_types += [TokenType.COPY.value] * (cur_len() - length_sofar)
             length_sofar = cur_len()
 

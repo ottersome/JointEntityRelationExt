@@ -19,7 +19,7 @@ from transformers import (
     PreTrainedTokenizer,
 )
 
-from ..utils import setup_logger
+from ..utils import TokenType, setup_logger
 
 
 class CopyAttentionBoi(L.LightningModule):
@@ -59,12 +59,16 @@ class CopyAttentionBoi(L.LightningModule):
             self.base = BartModel(self.bart_config)  # type: ignore
 
         assert isinstance(self.base, BartModel)
-        # Using `load_checkpoint` outside of the model would load the weights that are
-        # not yet loaded thus far.
+
+        ####################
+        # Heads
+        ####################
         self.copy_head = Linear(
             self.bart_config.d_model, self.bart_config.d_model
         )  # Encoder States Size x Decoder State Sizej
         self.relationship_head = Linear(self.bart_config.d_model, amount_of_relations)
+        # Just the head for vocabulary
+        self.normal_head = Linear(self.bart_config.d_model, self.bart_config.vocab_size)
 
     def forward(self, batchx, attention_mask):
         """
@@ -93,12 +97,25 @@ class CopyAttentionBoi(L.LightningModule):
         self._beamsearch(encoder_states, outputs)
 
     def _mixed_softmax(self, encoder_states, decoder_states) -> torch.Tensor:
-        # CHECK: Will likely have to do bmm here to consider batches
-        copy_scores = decoder_states @ F.relu(self.copy_head(encoder_states))
+        """
+        returns
+        -------
+            probabilities: (batch_length) x (target_len) x (encoder_states_len + vocab_length + relationship_lengths)
+        """
+        # encoder_states is (batch_length) x (sequence_length) x (hidden_dim)
+        encoder_hdn_transformed = torch.matmul(encoder_states, self.copy_head)
+        copy_scores = torch.bmm(decoder_states, encoder_hdn_transformed.transpose(1, 2))
+        # copy_scores = decoder_states @ self.copy_head(encoder_states)
+        # CHECK: if we have to use sqrt normalization in a simliar way to attention for balancing gradients
 
+        vocab_scores = self.normal_head(decoder_states)
         rel_scores = self.vocabulary_head(decoder_states)
-        concat = torch.cat((copy_scores, rel_scores), dim=1)
-        return concat
+
+        all_scores = torch.cat((copy_scores, vocab_scores, rel_scores), dim=-1)
+
+        probabilities = F.softmax(all_scores, dim=-1)
+
+        return probabilities
 
     def _beamsearch(
         self,
@@ -156,27 +173,17 @@ class CopyAttentionBoi(L.LightningModule):
         padding_token = self.tokenizer.pad_token_id
         sep_token = self.tokenizer.sep_token
 
+        # Generates Masks
+        copy_masks = input_types == TokenType.COPY
+        normal_mask = input_types == TokenType.NORMAL
+        relantion_mask = input_types == TokenType.RELATIONSHIP
+
         encoder_attn_mask = torch.ones_like(inputs)
         encoder_attn_mask[inputs == padding_token] = 0
         encoder_outputs = self.base.encoder(inputs, encoder_attn_mask)
         encoder_hidden_states = encoder_outputs.last_hidden_state
-        # TODO:  Create attention mask where padding tokens. Otherwise padding tokens dont work
-
-        # Transform target to a format that is suitable
-        # target is (batch_size) x (sequence_length)
-        #   contains negated inds referencing indices to copy from decoder input
-        #   positive ints are for relationships themselves.
-        for b in range(target.shape[0]):
-            mask = target[b, :] < 0
-            indices = -1 * target[b, mask]
-            replacements = inputs[b, indices]
-            target[b, mask] = replacements
-            # offset relationships by size of vocabulary
-            target[b, ~mask] += self.tokenizer.vocab_size
 
         decoder_attn_mask = torch.ones_like(target)
-        # TODO : We need to figureout how it is that the targets are batched up.( I guess we could batch them in preprocesing and also by the datamodule).
-        # We'll see when it complains
         decoder_attn_mask[target == padding_token] = 0
         decoder_hidden_outputs = self.base.decoder(
             target, decoder_attn_mask, encoder_hidden_states, encoder_attn_mask
