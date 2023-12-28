@@ -152,7 +152,7 @@ class CopyAttentionBoi(L.LightningModule):
     def training_step(self, batches, batch_idx):
         assert isinstance(self.base, BartModel)
         self.my_logger.debug(f"Going through batch idx {batch_idx}")
-        inputs, target = batches
+        inputs, target, input_types = batches
         padding_token = self.tokenizer.pad_token_id
         sep_token = self.tokenizer.sep_token
 

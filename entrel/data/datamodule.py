@@ -84,8 +84,12 @@ class DataModule(L.LightningDataModule):
         # Datasets so far are pandas dataframes. Before converting to a list
         # want to UNNEST column 'triplets':
         # Now only select columns 'tokens' and 'triplets'. But as simply lists, not numpy
-        self.train_dataset = train_dataset_df[["tokens", "triplets"]].values.tolist()
-        self.test_dataset = test_dataset_df[["tokens", "triplets"]].values.tolist()
+        self.train_dataset = train_dataset_df[
+            ["tokens", "triplets", "token_types"]
+        ].values.tolist()
+        self.test_dataset = test_dataset_df[
+            ["tokens", "triplets", "token_types"]
+        ].values.tolist()
 
     def prepare_data(self):
         # Load Stuff
@@ -157,20 +161,14 @@ class DataModule(L.LightningDataModule):
                         max_length=tokenizer.model_max_length,
                     )["input_ids"]
 
-                    fixed_triplets, rels = self._get_final_encoding(
+                    tokd_triplets, rels, token_types = self._get_final_encoding(
                         text, dirty_triplets, self.tokenizer
                     )
                     unique_rels = unique_rels.union(rels)
                     # Tokenize them and remove the outer stuff
-                    if len(fixed_triplets) == 0:
+                    if len(tokd_triplets) == 0:
                         skips += 1
                         continue  # We didnt get any matches
-                    # TODO: check if we are using tokenized or just ranges
-
-                    # tokd_triplets = self._tokenize_triplets_joint(
-                    #     fixed_triplets, tokenizer
-                    # )
-                    tokd_triplets = fixed_triplets
 
                     # Add Padding to said triplets
                     amnt_pad = self.output_max_len - len(tokd_triplets)
@@ -178,11 +176,11 @@ class DataModule(L.LightningDataModule):
 
                     assert (
                         amnt_pad > 0
-                    ), f"Padding assumptions are wrong.:{tokenizer.decode(tokd_triplets)}"
+                    ), f"Padding assumptions are wrong.:{tokenizer.decode(tokd_triplets)}"  # type: ignore
 
                     assert (
-                        len(tokd_text) == tokenizer.model_max_length
-                    ), f" Tokenized Text of not proper length ({len(tokd_text)}):{tokenizer.decode(tokd_text)}"
+                        len(tokd_text) == tokenizer.model_max_length  # type: ignore
+                    ), f" Tokenized Text of not proper length ({len(tokd_text)}):{tokenizer.decode(tokd_text)}"  # type: ignore
 
                     assert (
                         len(tokd_triplets) == self.output_max_len
@@ -192,6 +190,8 @@ class DataModule(L.LightningDataModule):
                         [
                             tokd_text,
                             tokd_triplets,
+                            token_types,
+                            # For Reference
                             text,
                             dirty_triplets,
                         ]
@@ -219,6 +219,7 @@ class DataModule(L.LightningDataModule):
             [
                 pa.field("tokens", pa.list_(pa.int64())),
                 pa.field("triplets", pa.list_(pa.int64())),
+                pa.field("token_types", pa.list_(pa.int64())),
                 pa.field("ref_text", pa.string()),
                 pa.field("ref_raw_triplets", pa.list_(pa.string())),
             ]
@@ -242,6 +243,7 @@ class DataModule(L.LightningDataModule):
                     columns=[
                         "tokens",
                         "triplets",
+                        "token_types",
                         "ref_text",
                         "ref_raw_triplets",
                     ],
@@ -365,7 +367,7 @@ class DataModule(L.LightningDataModule):
 
     def _get_final_encoding(
         self, sentence: str, dtriplets: List[str], tokenizer: PreTrainedTokenizer
-    ) -> Tuple[List[List], Set[str]]:
+    ) -> Tuple[List[int], Set[str], List[int]]:
         """
         An alternate (and possibly final) approach to extracting triplets.
         Sub-Obj are not tokenized, but rather given an index corresponding to input sentence.
@@ -400,7 +402,7 @@ class DataModule(L.LightningDataModule):
             best_e2 = find_consecutive_largest(sentence_words, e2)
 
             if best_e1 == None or best_e2 == None:
-                return [], unique_rels
+                return [], unique_rels, []
 
             # Add to Dictionary
             if rel not in self.rel_dict.keys():
@@ -413,19 +415,48 @@ class DataModule(L.LightningDataModule):
             # new_triplet += (-1 * (1 + np.arange(best_e1[0], best_e1[-1] + 1))).tolist()
             # new_triplet += (-1 * (1 + np.arange(best_e2[0], best_e2[-1] + 1))).tolist()
             # new_triplets.append(new_triplet)
+            cur_len = lambda: len(new_triplets)
 
-            token_ids_types = [TokenType.RELATIONSHIP]
+            token_ids_types = [TokenType.NORMAL.value]
+            new_triplets += tokenizer.convert_tokens_to_ids(["<s>"])
+            length_sofar = cur_len()
+
+            # Add Relationship
+            token_ids_types = [TokenType.RELATIONSHIP.value]
             new_triplets += [self.rel_dict[rel]]
-            length_sofar = len(new_triplets)
-            # Multiplying by -1 will allow us to do a copy-vs-relationship mask later when learning
+            length_sofar = cur_len()
+
+            # Comma Separator
+            new_triplets += tokenizer.encode(", ", add_special_tokens=False, is_split_into_words=True)  # type: ignore
+            token_ids_types += [TokenType.NORMAL.value] * (cur_len() - length_sofar)
+            length_sofar = cur_len()
+
+            # Add Copy Subject 1
             new_triplets += (-1 * (1 + np.arange(best_e1[0], best_e1[-1] + 1))).tolist()
-            token_ids_types += [TokenType.COPY] * (len(new_triplets) - length_sofar)
-            length_sofar = len(new_triplets)
-            token_ids_types += tokenizer.convert_tokens_to_ids(", ")  # type: ignore
+            token_ids_types += [TokenType.COPY.value] * (cur_len() - length_sofar)
+            length_sofar = cur_len()
+
+            # Comma Separator
+            new_triplets += tokenizer.encode(", ", add_special_tokens=False, is_split_into_words=True)  # type: ignore
+            token_ids_types += [TokenType.NORMAL.value] * (cur_len() - length_sofar)
+            length_sofar = cur_len()
+
+            # Add Copy Subject 2
             new_triplets += (-1 * (1 + np.arange(best_e2[0], best_e2[-1] + 1))).tolist()
-            token_ids_types += [TokenType.COPY] * (len(new_triplets) - length_sofar)
+            token_ids_types += [TokenType.COPY.value] * (cur_len() - length_sofar)
+            length_sofar = cur_len()
+
+            # Final Separator
+            if i != len(dtriplets) - 1:
+                new_triplets += self.tokenizer.encode(
+                    " | ", add_special_tokens=False, is_split_into_words=True
+                )
+            else:
+                new_triplets += self.tokenizer.convert_tokens_to_ids(["</s>"])
+            token_ids_types += [TokenType.NORMAL.value] * (cur_len() - length_sofar)
+
             # "Flatten the whole list):
-        return new_triplets, unique_rels
+        return new_triplets, unique_rels, token_ids_types
 
 
 def clean_string(str):
@@ -462,7 +493,8 @@ def find_consecutive_largest(sentence_words, entity_words):
 
 
 def collate_fn(batch):
-    data, target = zip(*batch)
-    data = torch.Tensor(data).to(torch.long)
-    target = torch.Tensor(target).to(torch.long)
-    return data, target
+    data, target, token_types = zip(*batch)
+    data = torch.LongTensor(data)
+    target = torch.LongTensor(target)
+    token_types = torch.LongTensor(target)
+    return data, target, token_types
