@@ -67,21 +67,54 @@ class DataModule(L.LightningDataModule):
             self.logger.info(
                 f"We are considering {len(self.metadata['relationships'])} relationships"
             )
-
         else:
             self.logger.info("🛠 No cached dataset foud. Will build from scratch...")
             train_dataset_df, test_dataset_df, _ = self._load_raw_dataset(
                 self.dataset, self.tokenizer
             )
-        # Datasets so far are pandas dataframes. Before converting to a list
-        # want to UNNEST column 'triplets':
-        # Now only select columns 'tokens' and 'triplets'. But as simply lists, not numpy
+        self.logger.info("🚦Preprocessing data, this takes a minute.")
+        self.train_dataset, self.test_dataset = self.preprocess_loaded_data(
+            train_dataset_df, test_dataset_df, ["tokens", "triplets", "token_types"]
+        )
+        self.logger.info("Done with data preprocessing.")
         self.train_dataset = train_dataset_df[
             ["tokens", "triplets", "token_types"]
         ].values.tolist()
         self.test_dataset = test_dataset_df[
             ["tokens", "triplets", "token_types"]
         ].values.tolist()
+
+    def preprocess_loaded_data(
+        self, train_df: pd.DataFrame, test_df: pd.DataFrame, selected_columns: List[str]
+    ):
+        train_df[["tokens", "triplets", "token_types"]] = train_df.apply(
+            self._preprocess_row, axis=1
+        )
+        test_df["tokens"], test_df["triplets"], test_df["token_types"] = test_df.apply(
+            self._preprocess_row, axis=1
+        )
+
+        return train_df, test_df
+
+    def _preprocess_row(self, row):
+        # Iterate over rows:
+        tokens = torch.LongTensor(row["tokens"].copy())
+        amnt_rels = len(self.metadata["relationships"])
+        vocab_size = self.tokenizer.vocab_size
+
+        token_types = torch.LongTensor(row["token_types"].copy())
+        triplets = torch.LongTensor(row["triplets"].copy())
+
+        mask_rel = token_types == TokenType.RELATIONSHIP
+        mask_copy = token_types == TokenType.COPY
+
+        # 👀 Carefult that this induces an order already
+        triplets[mask_rel] += vocab_size
+        triplets[mask_copy] += vocab_size + amnt_rels
+
+        return pd.Series(
+            [tokens, triplets, token_types], index=["tokens", "triplets", "token_types"]
+        )
 
     def prepare_data(self):
         # Load Stuff
@@ -165,6 +198,7 @@ class DataModule(L.LightningDataModule):
                     # Add Padding to said triplets
                     amnt_pad = self.output_max_len - len(tokd_triplets)
                     tokd_triplets += [tokenizer.pad_token_id] * amnt_pad
+                    token_types += [TokenType.NORMAL.value] * amnt_pad
 
                     assert (
                         amnt_pad > 0
@@ -409,13 +443,13 @@ class DataModule(L.LightningDataModule):
             # new_triplets.append(new_triplet)
             cur_len = lambda: len(new_triplets)
 
-            token_ids_types = [TokenType.NORMAL.value]
-            new_triplets += tokenizer.convert_tokens_to_ids(["<s>"])
+            new_triplets += tokenizer.convert_tokens_to_ids(["<s>"])  # type: ignore
+            token_ids_types += [TokenType.NORMAL.value] * cur_len()
             length_sofar = cur_len()
 
             # Add Relationship
-            token_ids_types = [TokenType.RELATIONSHIP.value]
             new_triplets += [self.rel_dict[rel]]
+            token_ids_types += [TokenType.RELATIONSHIP.value]
             length_sofar = cur_len()
 
             # Comma Separator
@@ -486,7 +520,7 @@ def find_consecutive_largest(sentence_words, entity_words):
 
 def collate_fn(batch):
     data, target, token_types = zip(*batch)
-    data = torch.LongTensor(data)
-    target = torch.LongTensor(target)
-    token_types = torch.LongTensor(target)
+    data = torch.stack(data)
+    target = torch.stack(target)
+    token_types = torch.stack(token_types)
     return data, target, token_types

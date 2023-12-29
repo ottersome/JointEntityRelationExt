@@ -22,6 +22,38 @@ from transformers import (
 from ..utils import TokenType, setup_logger
 
 
+class TypedNLLLoss(nn.Module):
+    def __init__(self, vocab_size: int, rel_space_size: int):
+        super(TypedNLLLoss, self).__init__()
+        self.vocab_size = vocab_size
+        self.rel_space_size = rel_space_size
+        self.nll_loss = nn.NLLLoss(reduction="none")
+
+    def forward(self, output, target, masks):
+        # Split the output and target into normal and copy parts
+        third_dim_len = output.size(2)
+        output_normal = output[
+            masks["normal"].unsqueeze(-1).expand(-1, -1, third_dim_len),
+        ][: self.vo]
+        output_rel = output[
+            :, masks["relationship"], self.vocab_size : self.rel_space_size
+        ]
+        output_copy = output[:, masks["copy"], self.vocab_size + self.rel_space_size :]
+
+        target_normal = target[masks["normal"]]
+        target_rel = target[masks["relationship"]]
+        target_copy = target[masks["copy"]]
+
+        # Compute the loss for the normal and copy parts separately
+        loss_normal = self.nll_loss(output_normal, target_normal)
+        loss_rel = self.nll_loss(output_rel, target_rel)
+        loss_copy = self.nll_loss(output_copy, target_copy)
+        # Combine the losses
+        loss = loss_normal + loss_copy + loss_rel
+        # Average the loss over the non-zero elements
+        return loss.sum()
+
+
 class CopyAttentionBoi(L.LightningModule):
     def __init__(
         self,
@@ -46,10 +78,13 @@ class CopyAttentionBoi(L.LightningModule):
 
         self.tokenizer = tokenizer
         self.beam_width = beam_width
+        self.amount_of_relations = amount_of_relations
 
         self.my_logger = setup_logger("CopyAttentionBoi", INFO)
 
-        self.loss = NLLLoss()  # TODO: make sure this is alright
+        # CHECK: amount_of_relations has correct value
+        # self.criterion = TypedNLLLoss(tokenizer.vocab_size, self.amount_of_relations)
+        self.criterion = nn.NLLLoss()
         # Create Configuration as per Parent
         self.bart_config = BartConfig.from_pretrained(parent_model_name)
 
@@ -66,7 +101,9 @@ class CopyAttentionBoi(L.LightningModule):
         self.copy_head = Linear(
             self.bart_config.d_model, self.bart_config.d_model
         )  # Encoder States Size x Decoder State Sizej
-        self.relationship_head = Linear(self.bart_config.d_model, amount_of_relations)
+        self.relationship_head = Linear(
+            self.bart_config.d_model, self.amount_of_relations
+        )
         # Just the head for vocabulary
         self.normal_head = Linear(self.bart_config.d_model, self.bart_config.vocab_size)
 
@@ -100,18 +137,18 @@ class CopyAttentionBoi(L.LightningModule):
         """
         returns
         -------
-            probabilities: (batch_length) x (target_len) x (encoder_states_len + vocab_length + relationship_lengths)
+            probabilities: (batch_length) x (target_len) x ( vocab_length + relationship_lengths + encoder_states_len)
         """
         # encoder_states is (batch_length) x (sequence_length) x (hidden_dim)
-        encoder_hdn_transformed = torch.matmul(encoder_states, self.copy_head)
+        encoder_hdn_transformed = self.copy_head(encoder_states)
         copy_scores = torch.bmm(decoder_states, encoder_hdn_transformed.transpose(1, 2))
         # copy_scores = decoder_states @ self.copy_head(encoder_states)
         # CHECK: if we have to use sqrt normalization in a simliar way to attention for balancing gradients
 
         vocab_scores = self.normal_head(decoder_states)
-        rel_scores = self.vocabulary_head(decoder_states)
+        rel_scores = self.relationship_head(decoder_states)
 
-        all_scores = torch.cat((copy_scores, vocab_scores, rel_scores), dim=-1)
+        all_scores = torch.cat((vocab_scores, rel_scores, copy_scores), dim=-1)
 
         probabilities = F.softmax(all_scores, dim=-1)
 
@@ -174,32 +211,35 @@ class CopyAttentionBoi(L.LightningModule):
         sep_token = self.tokenizer.sep_token
 
         # Generates Masks
-        copy_masks = input_types == TokenType.COPY
-        normal_mask = input_types == TokenType.NORMAL
-        relantion_mask = input_types == TokenType.RELATIONSHIP
+        masks = {
+            "copy": input_types == TokenType.COPY.value,
+            "normal": input_types == TokenType.NORMAL.value,
+            "relationship": input_types == TokenType.RELATIONSHIP.value,
+        }
 
         encoder_attn_mask = torch.ones_like(inputs)
         encoder_attn_mask[inputs == padding_token] = 0
-        encoder_outputs = self.base.encoder(inputs, encoder_attn_mask)
-        encoder_hidden_states = encoder_outputs.last_hidden_state
+        encoder_outputs = self.base.encoder(inputs, encoder_attn_mask).last_hidden_state
 
         decoder_attn_mask = torch.ones_like(target)
         decoder_attn_mask[target == padding_token] = 0
         decoder_hidden_outputs = self.base.decoder(
-            target, decoder_attn_mask, encoder_hidden_states, encoder_attn_mask
-        )
+            target, decoder_attn_mask, encoder_outputs, encoder_attn_mask
+        ).last_hidden_state
 
         mixed_probabilities = self._mixed_softmax(
             encoder_outputs, decoder_hidden_outputs
         )
-        # first_indices_of_pad = find_padding_indices(target, padding_token)
 
-        # Massage the indices
-        copy_mask = batch_idx < 0
-        # Use Copy to obtain a tensor
+        # Displace relation and copy targets
+        # target[masks["relationship"]] += self.bart_config.vocab_size
+        # target[masks["copy"]] += self.bart_config.vocab_size + self.amount_of_relations
 
-        yhat = self.base(batches)
-        loss = self.loss(yhat)
+        flat_probabilities = mixed_probabilities.view(-1, mixed_probabilities.size(-1))
+        flat_target = target.view(-1)
+
+        # loss = self.criterion(mixed_probabilities, target, masks)
+        loss = self.criterion(flat_probabilities, flat_target)
 
         return loss
 

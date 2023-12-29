@@ -3,14 +3,19 @@ from logging import INFO
 
 import debugpy
 import lightning as L
+import torch
 import wandb
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.tuner.tuning import Tuner
+from torch.autograd import set_detect_anomaly
 from transformers import AutoTokenizer, BartTokenizer, PretrainedConfig
 
 from entrel.data.datamodule import DataModule
 from entrel.models.CopyBoi import CopyAttentionBoi
 from entrel.utils import argfun, setup_logger
+
+# anomaly dtection
+torch.autograd.set_detect_anomaly(True)
 
 if __name__ == "__main__":
     args = argfun()
