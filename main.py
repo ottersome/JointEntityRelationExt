@@ -82,6 +82,7 @@ if __name__ == "__main__":
         logger=wandb_logger,
         accumulate_grad_batches=4,
         max_epochs=args.epochs,
+        val_check_interval=0.01,
         log_every_n_steps=1,
         enable_checkpointing=True,
     )

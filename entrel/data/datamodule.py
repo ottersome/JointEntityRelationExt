@@ -76,6 +76,8 @@ class DataModule(L.LightningDataModule):
         self.train_dataset, self.test_dataset = self.preprocess_loaded_data(
             train_dataset_df, test_dataset_df, ["tokens", "triplets", "token_types"]
         )
+        self.train_dataset = self.train_dataset.sample(frac=1).reset_index(drop=True)
+        self.test_dataset = self.test_dataset.sample(frac=1).reset_index(drop=True)
         self.logger.info("Done with data preprocessing.")
         self.train_dataset = train_dataset_df[
             ["tokens", "triplets", "token_types"]
@@ -87,12 +89,14 @@ class DataModule(L.LightningDataModule):
     def preprocess_loaded_data(
         self, train_df: pd.DataFrame, test_df: pd.DataFrame, selected_columns: List[str]
     ):
-        train_df[["tokens", "triplets", "token_types"]] = train_df.apply(
-            self._preprocess_row, axis=1
-        )
-        test_df["tokens"], test_df["triplets"], test_df["token_types"] = test_df.apply(
-            self._preprocess_row, axis=1
-        )
+        processed_train = train_df.apply(self._preprocess_row, axis=1)
+        train_df[["tokens", "triplets", "token_types"]] = processed_train[
+            selected_columns
+        ].values
+        processed_test = test_df.apply(self._preprocess_row, axis=1)
+        test_df[["tokens", "triplets", "token_types"]] = processed_test[
+            selected_columns
+        ].values
 
         return train_df, test_df
 
@@ -519,8 +523,10 @@ def find_consecutive_largest(sentence_words, entity_words):
 
 
 def collate_fn(batch):
-    data, target, token_types = zip(*batch)
-    data = torch.stack(data)
+    tknd_sentence, target, token_types = zip(*batch)
+    if isinstance(tknd_sentence[0], str):
+        print("wut")
+    tknd_sentence = torch.stack(tknd_sentence)
     target = torch.stack(target)
     token_types = torch.stack(token_types)
-    return data, target, token_types
+    return tknd_sentence, target, token_types

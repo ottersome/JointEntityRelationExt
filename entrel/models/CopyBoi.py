@@ -5,11 +5,13 @@ But just using a pretrained attention BART
 
 from logging import INFO
 from pathlib import Path
+from typing import List
 
 import lightning as L
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import Tensor
 from torch.nn import Linear, NLLLoss
 from transformers import (
     AutoModel,
@@ -133,7 +135,7 @@ class CopyAttentionBoi(L.LightningModule):
         )
         self._beamsearch(encoder_states, outputs)
 
-    def _mixed_softmax(self, encoder_states, decoder_states) -> torch.Tensor:
+    def _mixed_logsoftmax(self, encoder_states, decoder_states) -> torch.Tensor:
         """
         returns
         -------
@@ -150,7 +152,7 @@ class CopyAttentionBoi(L.LightningModule):
 
         all_scores = torch.cat((vocab_scores, rel_scores, copy_scores), dim=-1)
 
-        probabilities = F.softmax(all_scores, dim=-1)
+        probabilities = F.log_softmax(all_scores, dim=-1)
 
         return probabilities
 
@@ -184,7 +186,7 @@ class CopyAttentionBoi(L.LightningModule):
                 encoder_hidden_states=encoder_states,
                 encoder_attention_mask=encoder_attn_mask,
             )
-            probabilities = self._mixed_softmax(encoder_states, decoder_batch)
+            probabilities = self._mixed_logsoftmax(encoder_states, decoder_batch)
 
             top_p, top_i = torch.topk(probabilities, self.beam_width)
             top_i = top_i.view(
@@ -211,11 +213,6 @@ class CopyAttentionBoi(L.LightningModule):
         sep_token = self.tokenizer.sep_token
 
         # Generates Masks
-        masks = {
-            "copy": input_types == TokenType.COPY.value,
-            "normal": input_types == TokenType.NORMAL.value,
-            "relationship": input_types == TokenType.RELATIONSHIP.value,
-        }
 
         encoder_attn_mask = torch.ones_like(inputs)
         encoder_attn_mask[inputs == padding_token] = 0
@@ -227,7 +224,7 @@ class CopyAttentionBoi(L.LightningModule):
             target, decoder_attn_mask, encoder_outputs, encoder_attn_mask
         ).last_hidden_state
 
-        mixed_probabilities = self._mixed_softmax(
+        mixed_probabilities = self._mixed_logsoftmax(
             encoder_outputs, decoder_hidden_outputs
         )
 
@@ -240,7 +237,10 @@ class CopyAttentionBoi(L.LightningModule):
 
         # loss = self.criterion(mixed_probabilities, target, masks)
         loss = self.criterion(flat_probabilities, flat_target)
-
+        loss_avg = loss.mean()
+        self.log(
+            "train_loss", loss_avg.item(), prog_bar=True, on_step=True, on_epoch=True
+        )
         return loss
 
     def configure_optimizers(self):
@@ -250,6 +250,43 @@ class CopyAttentionBoi(L.LightningModule):
         bar = super().init_validation_tqdm()
         bar.set_description("Validation")
         return bar
+
+    def validation_step(self, ref_batches: List[Tensor], batch_idx):
+        # Whole of validation is here:
+        inputs, target, input_types = ref_batches
+        padding_token = self.tokenizer.pad_token_id
+        sep_token = self.tokenizer.sep_token
+
+        # Generates Masks
+
+        encoder_attn_mask = torch.ones_like(inputs)
+        encoder_attn_mask[inputs == padding_token] = 0
+        encoder_outputs = self.base.encoder(inputs, encoder_attn_mask).last_hidden_state
+
+        decoder_attn_mask = torch.ones_like(target)
+        decoder_attn_mask[target == padding_token] = 0
+        decoder_hidden_outputs = self.base.decoder(
+            target, decoder_attn_mask, encoder_outputs, encoder_attn_mask
+        ).last_hidden_state
+
+        mixed_probabilities = self._mixed_logsoftmax(
+            encoder_outputs, decoder_hidden_outputs
+        )
+
+        # Displace relation and copy targets
+        # target[masks["relationship"]] += self.bart_config.vocab_size
+        # target[masks["copy"]] += self.bart_config.vocab_size + self.amount_of_relations
+
+        flat_probabilities = mixed_probabilities.view(-1, mixed_probabilities.size(-1))
+        flat_target = target.view(-1)
+
+        # loss = self.criterion(mixed_probabilities, target, masks)
+        loss = self.criterion(flat_probabilities, flat_target)
+        loss_avg = loss.mean()
+        self.log(
+            "val_loss", loss_avg.item(), prog_bar=True, on_step=True, on_epoch=True
+        )
+        return loss
 
 
 class TripleBartWithCopyMechanism(BartModel):
