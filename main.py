@@ -15,7 +15,7 @@ from entrel.models.CopyBoi import CopyAttentionBoi
 from entrel.utils import argfun, setup_logger
 
 # anomaly dtection
-torch.autograd.set_detect_anomaly(True)
+# torch.autograd.set_detect_anomaly(True)
 
 if __name__ == "__main__":
     args = argfun()

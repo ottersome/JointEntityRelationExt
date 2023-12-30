@@ -1,9 +1,10 @@
 import json
 import os
 import re
+from copy import deepcopy
 from enum import Enum
 from logging import INFO
-from typing import List, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 import lightning as L
 import numpy as np
@@ -80,10 +81,10 @@ class DataModule(L.LightningDataModule):
         self.test_dataset = self.test_dataset.sample(frac=1).reset_index(drop=True)
         self.logger.info("Done with data preprocessing.")
         self.train_dataset = train_dataset_df[
-            ["tokens", "triplets", "token_types"]
+            ["tokens", "triplets", "token_types", "ref_text", "ref_raw_triplets"]
         ].values.tolist()
         self.test_dataset = test_dataset_df[
-            ["tokens", "triplets", "token_types"]
+            ["tokens", "triplets", "token_types", "ref_text", "ref_raw_triplets"]
         ].values.tolist()
 
     def preprocess_loaded_data(
@@ -112,7 +113,7 @@ class DataModule(L.LightningDataModule):
         mask_rel = token_types == TokenType.RELATIONSHIP
         mask_copy = token_types == TokenType.COPY
 
-        # 👀 Carefult that this induces an order already
+        # 👀 Careful that this induces an order already
         triplets[mask_rel] += vocab_size
         triplets[mask_copy] += vocab_size + amnt_rels
 
@@ -152,99 +153,15 @@ class DataModule(L.LightningDataModule):
             collate_fn=collate_fn,
         )
 
-    def parse_webnlg_ds(  # TODO: clean this method up
-        self, ds, tokenizer: PreTrainedTokenizer, max_length=1024
-    ) -> Tuple[List[Tuple], Set[str]]:  # HACK: remove ths hardcode max_length
-        result = []
-        print("Done")
-
-        skips = 0  # TEST: for statistics
-        unique_rels = set()
-        # TODO: maybe make this variable be passed to the class
-        self.output_max_len = 256
-
-        bar = tqdm(total=len(ds), desc="Going through dataset")
-        for row in ds:
-            # Change Triplets into an eaier to read format
-            dirty_triplets = row["modified_triple_sets"]["mtriple_set"][0]
-            # triplets = []
-            self.local_rels = set()
-
-            # Get Matching Text
-            for i in range(len(row["lex"]["comment"])):
-                # Sanitization
-                if row["lex"]["comment"][i] == "bad":
-                    continue
-                if len(row["lex"]["text"][i]) >= max_length:
-                    continue
-
-                text_examples = row["lex"]["text"]
-                # Start appending examples
-                for text in text_examples:
-                    text = clean_string(text)
-                    # Tokenize the incoming text
-                    tokd_text = tokenizer(
-                        text,
-                        truncation=True,
-                        padding="max_length",
-                        max_length=tokenizer.model_max_length,
-                    )["input_ids"]
-
-                    tokd_triplets, rels, token_types = self._get_final_encoding(
-                        text, dirty_triplets, self.tokenizer
-                    )
-                    unique_rels = unique_rels.union(rels)
-                    # Tokenize them and remove the outer stuff
-                    if len(tokd_triplets) == 0:
-                        skips += 1
-                        continue  # We didnt get any matches
-
-                    # Add Padding to said triplets
-                    amnt_pad = self.output_max_len - len(tokd_triplets)
-                    tokd_triplets += [tokenizer.pad_token_id] * amnt_pad
-                    token_types += [TokenType.NORMAL.value] * amnt_pad
-
-                    assert (
-                        amnt_pad > 0
-                    ), f"Padding assumptions are wrong.:{tokenizer.decode(tokd_triplets)}"  # type: ignore
-
-                    assert (
-                        len(tokd_text) == tokenizer.model_max_length  # type: ignore
-                    ), f" Tokenized Text of not proper length ({len(tokd_text)}):{tokenizer.decode(tokd_text)}"  # type: ignore
-
-                    assert (
-                        len(tokd_triplets) == self.output_max_len
-                    ), f"Wrong length for tokd_triplets"
-
-                    result.append(
-                        [
-                            tokd_text,
-                            tokd_triplets,
-                            token_types,
-                            # For Reference
-                            text,
-                            dirty_triplets,
-                        ]
-                    )
-            bar.update(1)
-
-        self.logger.info(
-            f"We ended with {skips} skipped examples and result {len(result)}\n"
-            f"Ratio of skips is {skips/(len(result) + skips)}\n"
-            f"Amount of unique rels {unique_rels}"
-        )
-        return result, unique_rels
-
     def _load_raw_dataset(
         self,
         dataset_type: DatasetInUse,
         tokenizer: PreTrainedTokenizer,
-        encoder_max=512,
     ):
         self.metadata = {}
-        self.unique_rels = set()
         dataset = None
         dfs = {}
+        rels_dict = {}
         schema = pa.schema(
             [
                 pa.field("tokens", pa.list_(pa.int64())),
@@ -265,8 +182,8 @@ class DataModule(L.LightningDataModule):
             bois = {"train": train, "val": val, "test": test}
 
             for k, boi in bois.items():
-                boi, rels = self.parse_webnlg_ds(boi, tokenizer)
-                self.unique_rels = self.unique_rels.union(rels)
+                boi, rels = parse_webnlg_ds(boi, tokenizer)
+                rels_dict.update(rels)
                 # Cache this as parquet
                 df = pd.DataFrame(
                     boi,
@@ -279,12 +196,11 @@ class DataModule(L.LightningDataModule):
                     ],
                 )
                 dfs[k] = df
-                # df.to_parquet(self.cache_paths[k])
                 table = pa.Table.from_pandas(df, schema=schema)
                 pq.write_table(table, self.cache_paths[k])
 
         # Store a JSon of all metadata:
-        self.metadata["relationships"] = list(self.rel_dict.keys())
+        self.metadata["relationships"] = list(rels_dict.keys())
         metadata_js = json.dumps(self.metadata)
         with open(os.path.join(self.cache_loc, "metadata.json"), "w") as f:
             f.write(metadata_js)
@@ -293,200 +209,168 @@ class DataModule(L.LightningDataModule):
         train = pd.read_parquet(self.cache_paths["train"])
         return dfs["train"], dfs["val"], dfs["test"]  # type:ignore
 
-    def _fix_entity_for_copymechanism_0(
-        self, sentence: str, dtriplets: List[str]
-    ) -> Tuple[List[List], Set[str]]:
-        # Split the entity into words
-        new_triplets = []
-        unique_rels = set()
-        for i, triplet in enumerate(dtriplets):
-            # NOTE: maybe try to use `tokenizer.tokenize` for more fine grained splitting ?
-            trip = [t.strip() for t in triplet.split("|")]
-            rel = trip[1]
-            e1 = re.split("_|\s", trip[0])
-            e2 = re.split("_|\s", trip[2])
-            sentence_words = re.split(" |,|\.", sentence)
-            sentence_words = [sw for sw in sentence_words if sw != ""]
 
-            best_e1 = find_consecutive_largest(sentence_words, e1)
-            best_e2 = find_consecutive_largest(sentence_words, e2)
-            if best_e1 == None or best_e2 == None:
-                return [[]], unique_rels
+def parse_webnlg_ds(  # TODO: clean this method up
+    ds, tokenizer: PreTrainedTokenizer, max_length=1024
+) -> Tuple[List[Tuple], Dict[str, int]]:  # HACK: remove ths hardcode max_length
+    result = []
+    print("Done")
 
-            # Add to Dictionary
-            if rel not in self.rel_dict.keys():
-                self.rel_dict[rel] = len(self.rel_dict.keys())
-                self.local_rels.update(rel)
+    rel_dict = {}
+    # TODO: maybe make this variable be passed to the class
+    output_max_len = 256
 
-            unique_rels.add(rel)
-            new_triplet = [
-                " ".join(sentence_words[best_e1[0] : best_e1[-1] + 1]),
-                trip[1],
-                " ".join(sentence_words[best_e2[0] : best_e2[-1] + 1]),
-            ]
+    bar = tqdm(total=len(ds), desc="Going through dataset")
+    for row in ds:
+        # Change Triplets into an eaier to read format
+        dirty_triplets = row["modified_triple_sets"]["mtriple_set"][0]
+        # triplets = []
+        # self.local_rels = set()
 
-            new_triplets.append(new_triplet)
-        return new_triplets, unique_rels
-
-    def _tokenize_triplets_joint(self, triplets: List, tokenizer: PreTrainedTokenizer):
-        result = [tokenizer.convert_tokens_to_ids("<s>")]
-        for i, triplet in enumerate(triplets):
-            if len(triplet) == 0:
+        # Get Matching Text
+        for i in range(len(row["lex"]["comment"])):
+            # Sanitization
+            if row["lex"]["comment"][i] == "bad":
                 continue
-            result += tokenizer.encode(triplet[0] + " ", add_special_tokens=False)
-            # result.append(self.rel_dict[triplet[1]])
-            result += tokenizer.encode(triplet[1] + " ", add_special_tokens=False)
-            result += tokenizer.encode(triplet[2], add_special_tokens=False)
-            if i != len(triplets) - 1:
-                result += tokenizer.encode(",", add_special_tokens=False)
-        result += tokenizer.convert_tokens_to_ids("</s>")
-        return result
-
-    def _tokenize_triplets(self, triplets: List, tokenizer: PreTrainedTokenizer):
-        new_ones = []
-        for triplet in triplets:
-            if len(triplet) == 0:
+            if len(row["lex"]["text"][i]) >= max_length:
                 continue
-            new_ones.append(
-                [
-                    tokenizer.encode(triplet[0], add_special_tokens=False),
-                    [self.rel_dict[triplet[1]]],
-                    tokenizer.encode(triplet[2], add_special_tokens=False)[1:-1],
-                ]
-            )
-        return new_ones
 
-    def _fix_entity_for_copymechanism_1(
-        self, sentence: str, dtriplets: List[str]
-    ) -> Tuple[List[List], Set[str]]:
-        """
-        An alternate (and possibly final) approach to extracting triplets.
-        Sub-Obj are not tokenized, but rather given an index corresponding to input sentence.
-        """
-        # Split the entity into words
-        new_triplets = []
-        unique_rels = set()
-        for i, triplet in enumerate(dtriplets):
-            # NOTE: maybe try to use `tokenizer.tokenize` for more fine grained splitting ?
-            trip = [t.strip() for t in triplet.split("|")]
-            rel = trip[1]
-            e1 = re.split("_|\s", trip[0])
-            e2 = re.split("_|\s", trip[2])
-            sentence_words = re.split(" |,|\.", sentence)
-            sentence_words = [sw for sw in sentence_words if sw != ""]
+            text_examples = row["lex"]["text"]
+            # Start appending examples
+            for text in text_examples:
+                text = clean_string(text)
+                # Tokenize the incoming text
+                tokd_text = tokenizer(
+                    text,
+                    truncation=True,
+                    padding="max_length",
+                    max_length=tokenizer.model_max_length,
+                )["input_ids"]
 
-            best_e1 = find_consecutive_largest(sentence_words, e1)
-            best_e2 = find_consecutive_largest(sentence_words, e2)
-            if best_e1 == None or best_e2 == None:
-                return [[]], unique_rels
-
-            # Add to Dictionary
-            if rel not in self.rel_dict.keys():
-                self.rel_dict[rel] = len(self.rel_dict.keys())
-                self.local_rels.update(rel)
-
-            unique_rels.add(rel)
-            # Encode positions rather than actual tokens
-            new_triplet = [self.rel_dict[rel]]
-            new_triplet += (-1 * (1 + np.arange(best_e1[0], best_e1[-1] + 1))).tolist()
-            new_triplet += (-1 * (1 + np.arange(best_e2[0], best_e2[-1] + 1))).tolist()
-            # "Flatten the whole list):
-
-            new_triplets.append(new_triplet)
-        return new_triplets, unique_rels
-
-    def _get_final_encoding(
-        self, sentence: str, dtriplets: List[str], tokenizer: PreTrainedTokenizer
-    ) -> Tuple[List[int], Set[str], List[int]]:
-        """
-        An alternate (and possibly final) approach to extracting triplets.
-        Sub-Obj are not tokenized, but rather given an index corresponding to input sentence.
-        Note
-        ----
-            token_ids_types is to distinguish between: copy, relationship, and normal (vocab) tokens
-        """
-        # Split the entity into words
-        token_ids_types = []
-        new_triplets = []
-        unique_rels = set()
-        # if len(dtriplets) > 1:
-        #     print("Lets go")
-
-        for i, triplet in enumerate(dtriplets):
-            # NOTE: maybe try to use `tokenizer.tokenize` for more fine grained splitting ?
-            # Replace _ with " "
-            triplet = clean_string(triplet)
-            sentence = clean_string(sentence)
-
-            trip = [t.strip() for t in triplet.split("|")]
-            rel = trip[1]
-            e1 = tokenizer.encode(
-                trip[0], add_special_tokens=False, is_split_into_words=True
-            )
-            e2 = tokenizer.encode(
-                trip[2], add_special_tokens=False, is_split_into_words=True
-            )
-            sentence_words = tokenizer.encode(sentence)
-
-            best_e1 = find_consecutive_largest(sentence_words, e1)
-            best_e2 = find_consecutive_largest(sentence_words, e2)
-
-            if best_e1 == None or best_e2 == None:
-                return [], unique_rels, []
-
-            # Add to Dictionary
-            if rel not in self.rel_dict.keys():
-                self.rel_dict[rel] = len(self.rel_dict.keys())
-                self.local_rels.update(rel)
-
-            unique_rels.add(rel)
-            # Encode positions rather than actual tokens
-            # new_triplet = [self.rel_dict[rel]]
-            # new_triplet += (-1 * (1 + np.arange(best_e1[0], best_e1[-1] + 1))).tolist()
-            # new_triplet += (-1 * (1 + np.arange(best_e2[0], best_e2[-1] + 1))).tolist()
-            # new_triplets.append(new_triplet)
-            cur_len = lambda: len(new_triplets)
-
-            new_triplets += tokenizer.convert_tokens_to_ids(["<s>"])  # type: ignore
-            token_ids_types += [TokenType.NORMAL.value] * cur_len()
-            length_sofar = cur_len()
-
-            # Add Relationship
-            new_triplets += [self.rel_dict[rel]]
-            token_ids_types += [TokenType.RELATIONSHIP.value]
-            length_sofar = cur_len()
-
-            # Comma Separator
-            new_triplets += tokenizer.encode(", ", add_special_tokens=False, is_split_into_words=True)  # type: ignore
-            token_ids_types += [TokenType.NORMAL.value] * (cur_len() - length_sofar)
-            length_sofar = cur_len()
-
-            # Add Copy Subject 1
-            new_triplets += np.arange(best_e1[0], best_e1[-1] + 1).tolist()
-            token_ids_types += [TokenType.COPY.value] * (cur_len() - length_sofar)
-            length_sofar = cur_len()
-
-            # Comma Separator
-            new_triplets += tokenizer.encode(", ", add_special_tokens=False, is_split_into_words=True)  # type: ignore
-            token_ids_types += [TokenType.NORMAL.value] * (cur_len() - length_sofar)
-            length_sofar = cur_len()
-
-            # Add Copy Subject 2
-            new_triplets += np.arange(best_e2[0], best_e2[-1] + 1).tolist()
-            token_ids_types += [TokenType.COPY.value] * (cur_len() - length_sofar)
-            length_sofar = cur_len()
-
-            # Final Separator
-            if i != len(dtriplets) - 1:
-                new_triplets += self.tokenizer.encode(
-                    " | ", add_special_tokens=False, is_split_into_words=True
+                tokd_triplets, updated_rel_dict, token_types = get_target_encoding(
+                    text, dirty_triplets, tokenizer, rel_dict
                 )
-            else:
-                new_triplets += self.tokenizer.convert_tokens_to_ids(["</s>"])
-            token_ids_types += [TokenType.NORMAL.value] * (cur_len() - length_sofar)
+                rel_dict.update(updated_rel_dict)
+                # Tokenize them and remove the outer stuff
 
-            # "Flatten the whole list):
-        return new_triplets, unique_rels, token_ids_types
+                # Add Padding to said triplets
+                amnt_pad = output_max_len - len(tokd_triplets)
+                tokd_triplets += [tokenizer.pad_token_id] * amnt_pad
+                token_types += [TokenType.NORMAL.value] * amnt_pad
+
+                assert (
+                    amnt_pad > 0
+                ), f"Padding assumptions are wrong.:{tokenizer.decode(tokd_triplets)}"  # type: ignore
+
+                assert (
+                    len(tokd_text) == tokenizer.model_max_length  # type: ignore
+                ), f" Tokenized Text of not proper length ({len(tokd_text)}):{tokenizer.decode(tokd_text)}"  # type: ignore
+
+                assert (
+                    len(tokd_triplets) == output_max_len
+                ), f"Wrong length for tokd_triplets"
+
+                result.append(
+                    [
+                        tokd_text,
+                        tokd_triplets,
+                        token_types,
+                        # For Reference
+                        text,
+                        dirty_triplets,
+                    ]
+                )
+        bar.update(1)
+
+    return result, rel_dict
+
+
+def get_target_encoding(
+    sentence: str,
+    dtriplets: List[str],
+    tokenizer: PreTrainedTokenizer,
+    rel_dict: Dict,
+) -> Tuple[List[int], Dict[str, int], List[int]]:
+    """
+    An alternate (and possibly final) approach to extracting triplets.
+    Sub-Obj are not tokenized, but rather given an index corresponding to input sentence.
+    Note
+    ----
+        token_ids_types is to distinguish between: copy, relationship, and normal (vocab) tokens
+    """
+    # Split the entity into words
+    token_ids_types = []
+    new_triplets = []
+    unique_rels = deepcopy(rel_dict)
+
+    for i, triplet in enumerate(dtriplets):
+        # NOTE: maybe try to use `tokenizer.tokenize` for more fine grained splitting ?
+        # Replace _ with " "
+        triplet = clean_string(triplet)
+        sentence = clean_string(sentence)
+
+        trip = [t.strip() for t in triplet.split("|")]
+        rel = trip[1]
+        e1 = tokenizer.encode(
+            trip[0], add_special_tokens=False, is_split_into_words=True
+        )
+        e2 = tokenizer.encode(
+            trip[2], add_special_tokens=False, is_split_into_words=True
+        )
+        sentence_words = tokenizer.encode(sentence)
+
+        best_e1 = find_consecutive_largest(sentence_words, e1)
+        best_e2 = find_consecutive_largest(sentence_words, e2)
+
+        if best_e1 == None or best_e2 == None:
+            return [], unique_rels, []
+
+        # Add to Dictionary
+        if rel not in unique_rels.keys():
+            unique_rels[rel] = len(unique_rels.keys())
+
+        cur_len = lambda: len(new_triplets)
+
+        new_triplets += tokenizer.convert_tokens_to_ids(["<s>"])  # type: ignore
+        token_ids_types += [TokenType.NORMAL.value] * cur_len()
+        length_sofar = cur_len()
+
+        # Add Relationship
+        new_triplets += [unique_rels[rel]]
+        token_ids_types += [TokenType.RELATIONSHIP.value]
+        length_sofar = cur_len()
+
+        # Comma Separator
+        new_triplets += tokenizer.encode(", ", add_special_tokens=False, is_split_into_words=True)  # type: ignore
+        token_ids_types += [TokenType.NORMAL.value] * (cur_len() - length_sofar)
+        length_sofar = cur_len()
+
+        # Add Copy Subject 1
+        new_triplets += np.arange(best_e1[0], best_e1[-1] + 1).tolist()
+        token_ids_types += [TokenType.COPY.value] * (cur_len() - length_sofar)
+        length_sofar = cur_len()
+
+        # Comma Separator
+        new_triplets += tokenizer.encode(", ", add_special_tokens=False, is_split_into_words=True)  # type: ignore
+        token_ids_types += [TokenType.NORMAL.value] * (cur_len() - length_sofar)
+        length_sofar = cur_len()
+
+        # Add Copy Subject 2
+        new_triplets += np.arange(best_e2[0], best_e2[-1] + 1).tolist()
+        token_ids_types += [TokenType.COPY.value] * (cur_len() - length_sofar)
+        length_sofar = cur_len()
+
+        # Final Separator
+        if i != len(dtriplets) - 1:
+            new_triplets += tokenizer.encode(
+                " | ", add_special_tokens=False, is_split_into_words=True
+            )
+        else:
+            new_triplets += tokenizer.convert_tokens_to_ids(["</s>"])
+        token_ids_types += [TokenType.NORMAL.value] * (cur_len() - length_sofar)
+
+        # "Flatten the whole list):
+    return new_triplets, unique_rels, token_ids_types
 
 
 def clean_string(str):
@@ -523,10 +407,116 @@ def find_consecutive_largest(sentence_words, entity_words):
 
 
 def collate_fn(batch):
-    tknd_sentence, target, token_types = zip(*batch)
+    tknd_sentence, target, token_types, ref_text, ref_raw_triplets = zip(*batch)
     if isinstance(tknd_sentence[0], str):
         print("wut")
     tknd_sentence = torch.stack(tknd_sentence)
     target = torch.stack(target)
-    token_types = torch.stack(token_types)
-    return tknd_sentence, target, token_types
+    # references = zip(ref_text, ref_)
+    # token_types = torch.stack(token_types)
+    return tknd_sentence, target, ref_text, ref_raw_triplets  # , token_types
+
+
+### Old Code probably useless ###
+
+# def _fix_entity_for_copymechanism_0(
+#     self, sentence: str, dtriplets: List[str]
+# ) -> Tuple[List[List], Set[str]]:
+#     # Split the entity into words
+#     new_triplets = []
+#     unique_rels = set()
+#     for i, triplet in enumerate(dtriplets):
+#         # NOTE: maybe try to use `tokenizer.tokenize` for more fine grained splitting ?
+#         trip = [t.strip() for t in triplet.split("|")]
+#         rel = trip[1]
+#         e1 = re.split("_|\s", trip[0])
+#         e2 = re.split("_|\s", trip[2])
+#         sentence_words = re.split(" |,|\.", sentence)
+#         sentence_words = [sw for sw in sentence_words if sw != ""]
+#
+#         best_e1 = find_consecutive_largest(sentence_words, e1)
+#         best_e2 = find_consecutive_largest(sentence_words, e2)
+#         if best_e1 == None or best_e2 == None:
+#             return [[]], unique_rels
+#
+#         # Add to Dictionary
+#         if rel not in self.rel_dict.keys():
+#             self.rel_dict[rel] = len(self.rel_dict.keys())
+#             self.local_rels.update(rel)
+#
+#         unique_rels.add(rel)
+#         new_triplet = [
+#             " ".join(sentence_words[best_e1[0] : best_e1[-1] + 1]),
+#             trip[1],
+#             " ".join(sentence_words[best_e2[0] : best_e2[-1] + 1]),
+#         ]
+#
+#         new_triplets.append(new_triplet)
+#     return new_triplets, unique_rels
+#
+# def _tokenize_triplets_joint(self, triplets: List, tokenizer: PreTrainedTokenizer):
+#     result = [tokenizer.convert_tokens_to_ids("<s>")]
+#     for i, triplet in enumerate(triplets):
+#         if len(triplet) == 0:
+#             continue
+#         result += tokenizer.encode(triplet[0] + " ", add_special_tokens=False)
+#         result += tokenizer.encode(triplet[1] + " ", add_special_tokens=False)
+#         result += tokenizer.encode(triplet[2], add_special_tokens=False)
+#         if i != len(triplets) - 1:
+#             result += tokenizer.encode(",", add_special_tokens=False)
+#     result += tokenizer.convert_tokens_to_ids("</s>")
+#     return result
+#
+# def _tokenize_triplets(self, triplets: List, tokenizer: PreTrainedTokenizer):
+#     new_ones = []
+#     for triplet in triplets:
+#         if len(triplet) == 0:
+#             continue
+#         new_ones.append(
+#             [
+#                 tokenizer.encode(triplet[0], add_special_tokens=False),
+#                 [self.rel_dict[triplet[1]]],
+#                 tokenizer.encode(triplet[2], add_special_tokens=False)[1:-1],
+#             ]
+#         )
+#     return new_ones
+#
+# def _fix_entity_for_copymechanism_1(
+#     self, sentence: str, dtriplets: List[str]
+# ) -> Tuple[List[List], Set[str]]:
+#     """
+#     An alternate approach to extracting triplets.
+#     Sub-Obj are not tokenized, but rather given an index corresponding to input sentence.
+#     (unused)
+#     """
+#     # Split the entity into words
+#     new_triplets = []
+#     unique_rels = set()
+#     for i, triplet in enumerate(dtriplets):
+#         # NOTE: maybe try to use `tokenizer.tokenize` for more fine grained splitting ?
+#         trip = [t.strip() for t in triplet.split("|")]
+#         rel = trip[1]
+#         e1 = re.split("_|\s", trip[0])
+#         e2 = re.split("_|\s", trip[2])
+#         sentence_words = re.split(" |,|\.", sentence)
+#         sentence_words = [sw for sw in sentence_words if sw != ""]
+#
+#         best_e1 = find_consecutive_largest(sentence_words, e1)
+#         best_e2 = find_consecutive_largest(sentence_words, e2)
+#         if best_e1 == None or best_e2 == None:
+#             return [[]], unique_rels
+#
+#         # Add to Dictionary
+#         if rel not in self.rel_dict.keys():
+#             self.rel_dict[rel] = len(self.rel_dict.keys())
+#             self.local_rels.update(rel)
+#
+#         unique_rels.add(rel)
+#         # Encode positions rather than actual tokens
+#         new_triplet = [self.rel_dict[rel]]
+#         new_triplet += (-1 * (1 + np.arange(best_e1[0], best_e1[-1] + 1))).tolist()
+#         new_triplet += (-1 * (1 + np.arange(best_e2[0], best_e2[-1] + 1))).tolist()
+#         # "Flatten the whole list):
+#
+#         new_triplets.append(new_triplet)
+#     return new_triplets, unique_rels
