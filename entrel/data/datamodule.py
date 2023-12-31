@@ -42,7 +42,7 @@ class DataModule(L.LightningDataModule):
             "test": os.path.join(cache_location, "test.parquet"),
         }
         self.train_dataset = None
-        self.test_dataset = None
+        self.val_dataset = None
         self.batch_size = batch_size
         self.metadata = {}
 
@@ -62,7 +62,7 @@ class DataModule(L.LightningDataModule):
         if all(check_1):
             self.logger.info("📂 Loading cached dataset")
             train_dataset_df = pd.read_parquet(self.cache_paths["train"])
-            test_dataset_df = pd.read_parquet(self.cache_paths["test"])
+            val_dataset_df = pd.read_parquet(self.cache_paths["test"])
             with open(os.path.join(self.cache_loc, "metadata.json"), "r") as f:
                 self.metadata = json.load(f)
             self.logger.info(
@@ -70,20 +70,20 @@ class DataModule(L.LightningDataModule):
             )
         else:
             self.logger.info("🛠 No cached dataset foud. Will build from scratch...")
-            train_dataset_df, test_dataset_df, _ = self._load_raw_dataset(
+            train_dataset_df, val_dataset_df, test_dataset_df = self._load_raw_dataset(
                 self.dataset, self.tokenizer
             )
         self.logger.info("🚦Preprocessing data, this takes a minute.")
-        self.train_dataset, self.test_dataset = self.preprocess_loaded_data(
-            train_dataset_df, test_dataset_df, ["tokens", "triplets", "token_types"]
+        self.train_dataset, self.val_dataset = self.preprocess_loaded_data(
+            train_dataset_df, val_dataset_df, ["tokens", "triplets", "token_types"]
         )
-        self.train_dataset = self.train_dataset.sample(frac=1).reset_index(drop=True)
-        self.test_dataset = self.test_dataset.sample(frac=1).reset_index(drop=True)
+        # self.train_dataset = self.train_dataset.sample(frac=1).reset_index(drop=True)
+        # self.val_Dataset = self.val_dataset.sample(frac=1).reset_index(drop=True)
         self.logger.info("Done with data preprocessing.")
         self.train_dataset = train_dataset_df[
             ["tokens", "triplets", "token_types", "ref_text", "ref_raw_triplets"]
         ].values.tolist()
-        self.test_dataset = test_dataset_df[
+        self.val_dataset = val_dataset_df[
             ["tokens", "triplets", "token_types", "ref_text", "ref_raw_triplets"]
         ].values.tolist()
 
@@ -125,7 +125,7 @@ class DataModule(L.LightningDataModule):
         # Load Stuff
         needs_to_load_data = [
             self.train_dataset == None,
-            self.test_dataset == None,
+            self.val_dataset == None,
             len(self.metadata) == 0,
         ]
         if any(needs_to_load_data):
@@ -140,17 +140,19 @@ class DataModule(L.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=12,
             collate_fn=collate_fn,
+            shuffle=True,
         )
 
     # Overwrites
     def val_dataloader(self):
-        if self.test_dataset == None:
+        if self.val_dataset == None:
             raise ValueError("DataModule not prepared. Please first run prepare_data()")
         return DataLoader(
-            self.test_dataset,
+            self.val_dataset,
             batch_size=self.batch_size,
             num_workers=12,
             collate_fn=collate_fn,
+            shuffle=True,
         )
 
     def _load_raw_dataset(
