@@ -5,6 +5,7 @@ import debugpy
 import lightning as L
 import torch
 import wandb
+from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.tuner.tuning import Tuner
 from torch.autograd import set_detect_anomaly
@@ -73,7 +74,10 @@ if __name__ == "__main__":
         wandb_logger = WandbLogger(project=args.wandb_project_name)
     else:
         wandb_logger = None
-
+    # CheckPointing
+    checkpoint_callback = ModelCheckpoint(
+        dirpath="./checkpoints", save_top_k=3, monitor="val_loss"
+    )
     # Setup Trainer
     logger.info("Setting up Trainer")
     trainer = L.Trainer(
@@ -85,7 +89,9 @@ if __name__ == "__main__":
         val_check_interval=0.01,
         log_every_n_steps=1,
         enable_checkpointing=True,
+        callbacks=[checkpoint_callback],
     )
+
     tuner = Tuner(trainer)
     tuner.scale_batch_size(model, mode="binsearch", datamodule=data_module)
 

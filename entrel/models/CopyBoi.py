@@ -24,38 +24,6 @@ from transformers import (
 from ..utils import TokenType, setup_logger
 
 
-class TypedNLLLoss(nn.Module):
-    def __init__(self, vocab_size: int, rel_space_size: int):
-        super(TypedNLLLoss, self).__init__()
-        self.vocab_size = vocab_size
-        self.rel_space_size = rel_space_size
-        self.nll_loss = nn.NLLLoss(reduction="none")
-
-    def forward(self, output, target, masks):
-        # Split the output and target into normal and copy parts
-        third_dim_len = output.size(2)
-        output_normal = output[
-            masks["normal"].unsqueeze(-1).expand(-1, -1, third_dim_len),
-        ][: self.vo]
-        output_rel = output[
-            :, masks["relationship"], self.vocab_size : self.rel_space_size
-        ]
-        output_copy = output[:, masks["copy"], self.vocab_size + self.rel_space_size :]
-
-        target_normal = target[masks["normal"]]
-        target_rel = target[masks["relationship"]]
-        target_copy = target[masks["copy"]]
-
-        # Compute the loss for the normal and copy parts separately
-        loss_normal = self.nll_loss(output_normal, target_normal)
-        loss_rel = self.nll_loss(output_rel, target_rel)
-        loss_copy = self.nll_loss(output_copy, target_copy)
-        # Combine the losses
-        loss = loss_normal + loss_copy + loss_rel
-        # Average the loss over the non-zero elements
-        return loss.sum()
-
-
 class CopyAttentionBoi(L.LightningModule):
     def __init__(
         self,
@@ -100,6 +68,9 @@ class CopyAttentionBoi(L.LightningModule):
         ####################
         # Heads
         ####################
+        self.my_logger.info(
+            f"Setting up the relationship head with {self.amount_of_relations}"
+        )
         self.copy_head = Linear(
             self.bart_config.d_model, self.bart_config.d_model
         )  # Encoder States Size x Decoder State Sizej
@@ -207,13 +178,11 @@ class CopyAttentionBoi(L.LightningModule):
 
     def training_step(self, batches, batch_idx):
         assert isinstance(self.base, BartModel)
-        self.my_logger.debug(f"Going through batch idx {batch_idx}")
-        inputs, target, input_types = batches
+        # self.my_logger.debug(f"Going through batch idx {batch_idx}")
+        inputs, target, ref_text, ref_triplets = batches
         padding_token = self.tokenizer.pad_token_id
-        sep_token = self.tokenizer.sep_token
 
         # Generates Masks
-
         encoder_attn_mask = torch.ones_like(inputs)
         encoder_attn_mask[inputs == padding_token] = 0
         encoder_outputs = self.base.encoder(inputs, encoder_attn_mask).last_hidden_state
@@ -228,10 +197,6 @@ class CopyAttentionBoi(L.LightningModule):
             encoder_outputs, decoder_hidden_outputs
         )
 
-        # Displace relation and copy targets
-        # target[masks["relationship"]] += self.bart_config.vocab_size
-        # target[masks["copy"]] += self.bart_config.vocab_size + self.amount_of_relations
-
         flat_probabilities = mixed_probabilities.view(-1, mixed_probabilities.size(-1))
         flat_target = target.view(-1)
 
@@ -241,6 +206,9 @@ class CopyAttentionBoi(L.LightningModule):
         self.log(
             "train_loss", loss_avg.item(), prog_bar=True, on_step=True, on_epoch=True
         )
+        # self.my_logger.debug(
+        #     f"At batch {batch_idx} we are looking at ref_text {ref_text}  and triplets {ref_triplets}"
+        # )
         return loss
 
     def configure_optimizers(self):
@@ -253,7 +221,7 @@ class CopyAttentionBoi(L.LightningModule):
 
     def validation_step(self, ref_batches: List[Tensor], batch_idx):
         # Whole of validation is here:
-        inputs, target, input_types = ref_batches
+        inputs, target, ref_text, ref_triplets = ref_batches
         padding_token = self.tokenizer.pad_token_id
         sep_token = self.tokenizer.sep_token
 
@@ -273,10 +241,6 @@ class CopyAttentionBoi(L.LightningModule):
             encoder_outputs, decoder_hidden_outputs
         )
 
-        # Displace relation and copy targets
-        # target[masks["relationship"]] += self.bart_config.vocab_size
-        # target[masks["copy"]] += self.bart_config.vocab_size + self.amount_of_relations
-
         flat_probabilities = mixed_probabilities.view(-1, mixed_probabilities.size(-1))
         flat_target = target.view(-1)
 
@@ -285,6 +249,9 @@ class CopyAttentionBoi(L.LightningModule):
         loss_avg = loss.mean()
         self.log(
             "val_loss", loss_avg.item(), prog_bar=True, on_step=True, on_epoch=True
+        )
+        self.my_logger.debug(
+            f" At validation batch_idx {batch_idx} we have examples ref_text {ref_text} and triplets {ref_triplets}"
         )
         return loss
 
@@ -326,3 +293,35 @@ def find_padding_indices(tensor, padding_token=0):
             index = -1
         indices.append(index)
     return indices
+
+
+class TypedNLLLoss(nn.Module):
+    def __init__(self, vocab_size: int, rel_space_size: int):
+        super(TypedNLLLoss, self).__init__()
+        self.vocab_size = vocab_size
+        self.rel_space_size = rel_space_size
+        self.nll_loss = nn.NLLLoss(reduction="none")
+
+    def forward(self, output, target, masks):
+        # Split the output and target into normal and copy parts
+        third_dim_len = output.size(2)
+        output_normal = output[
+            masks["normal"].unsqueeze(-1).expand(-1, -1, third_dim_len),
+        ][: self.vo]
+        output_rel = output[
+            :, masks["relationship"], self.vocab_size : self.rel_space_size
+        ]
+        output_copy = output[:, masks["copy"], self.vocab_size + self.rel_space_size :]
+
+        target_normal = target[masks["normal"]]
+        target_rel = target[masks["relationship"]]
+        target_copy = target[masks["copy"]]
+
+        # Compute the loss for the normal and copy parts separately
+        loss_normal = self.nll_loss(output_normal, target_normal)
+        loss_rel = self.nll_loss(output_rel, target_rel)
+        loss_copy = self.nll_loss(output_copy, target_copy)
+        # Combine the losses
+        loss = loss_normal + loss_copy + loss_rel
+        # Average the loss over the non-zero elements
+        return loss.sum()

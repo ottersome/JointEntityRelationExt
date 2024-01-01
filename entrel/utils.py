@@ -51,12 +51,12 @@ def setup_logger(name="main", level=logging.INFO):
     # Setup Parent Directory
     os.makedirs("logs/", exist_ok=True)
     logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
     # Create Handlers
-    fh = logging.FileHandler(os.path.join("logs/", name + ".log"))
+    fh = logging.FileHandler(os.path.join("logs/", name + ".log"), "w")
     sh = logging.StreamHandler()
     fh.setLevel(logging.DEBUG)
     sh.setLevel(level)

@@ -103,12 +103,12 @@ class DataModule(L.LightningDataModule):
 
     def _preprocess_row(self, row):
         # Iterate over rows:
-        tokens = torch.LongTensor(row["tokens"].copy())
+        tokens = torch.LongTensor(np.array(row["tokens"]))
         amnt_rels = len(self.metadata["relationships"])
         vocab_size = self.tokenizer.vocab_size
 
-        token_types = torch.LongTensor(row["token_types"].copy())
-        triplets = torch.LongTensor(row["triplets"].copy())
+        token_types = torch.LongTensor(np.array(row["token_types"]))
+        triplets = torch.LongTensor(np.array(row["triplets"]))
 
         mask_rel = token_types == TokenType.RELATIONSHIP
         mask_copy = token_types == TokenType.COPY
@@ -152,7 +152,6 @@ class DataModule(L.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=12,
             collate_fn=collate_fn,
-            shuffle=True,
         )
 
     def _load_raw_dataset(
@@ -173,33 +172,43 @@ class DataModule(L.LightningDataModule):
                 pa.field("ref_raw_triplets", pa.list_(pa.string())),
             ]
         )
-        if dataset_type == DatasetInUse.NLG:
-            # Method provided by libraries
-            dataset = load_dataset("web_nlg", "release_v3.0_en")
+        # Method provided by libraries
+        dataset = load_dataset("web_nlg", "release_v3.0_en")
 
-            train = dataset["train"]  # type:ignore
-            val = dataset["test"]  # type:ignore
-            test = dataset["dev"]  # type:ignore
+        # We will mix them because relationships are not equally spread
+        # 👁️ Pay attention here: The split they provide will not ensure all relationships are equally spread across folds.
+        #    Therefore, the `add_RathThan_Rem` variable will be used to stop adding relationships that do not exist to non-training folds.
 
-            bois = {"train": train, "val": val, "test": test}
+        train = dataset["train"]  # type:ignore
+        val = dataset["test"]  # type:ignore
+        test = dataset["dev"]  # type:ignore
 
-            for k, boi in bois.items():
-                boi, rels = parse_webnlg_ds(boi, tokenizer)
-                rels_dict.update(rels)
-                # Cache this as parquet
-                df = pd.DataFrame(
-                    boi,
-                    columns=[
-                        "tokens",
-                        "triplets",
-                        "token_types",
-                        "ref_text",
-                        "ref_raw_triplets",
-                    ],
-                )
-                dfs[k] = df
-                table = pa.Table.from_pandas(df, schema=schema)
-                pq.write_table(table, self.cache_paths[k])
+        bois = {"train": train, "val": val, "test": test}
+        current_sample_list = []
+
+        for k, new_samples in bois.items():
+            add_RathThan_Rem = True if k == "train" else False
+            new_samples, rels = parse_webnlg_ds(
+                new_samples, k, tokenizer, rels_dict, add_RathThan_Rem
+            )
+            current_sample_list += new_samples
+            rels_dict.update(rels)
+            # Cache this as parquet
+            df = pd.DataFrame(
+                new_samples,
+                columns=[
+                    "tokens",
+                    "triplets",
+                    "token_types",
+                    "ref_text",
+                    "ref_raw_triplets",
+                ],
+            )
+            dfs[k] = df
+            table = pa.Table.from_pandas(df, schema=schema)
+            pq.write_table(table, self.cache_paths[k])
+
+        # Make sure that
 
         # Store a JSon of all metadata:
         self.metadata["relationships"] = list(rels_dict.keys())
@@ -213,21 +222,24 @@ class DataModule(L.LightningDataModule):
 
 
 def parse_webnlg_ds(  # TODO: clean this method up
-    ds, tokenizer: PreTrainedTokenizer, max_length=1024
+    ds,
+    dataset_name: str,
+    tokenizer: PreTrainedTokenizer,
+    seen_rels: Dict[str, int],
+    add_RathThan_Rem=True,
+    max_length=1024,
 ) -> Tuple[List[Tuple], Dict[str, int]]:  # HACK: remove ths hardcode max_length
     result = []
     print("Done")
 
-    rel_dict = {}
+    rel_dict = deepcopy(seen_rels)
     # TODO: maybe make this variable be passed to the class
     output_max_len = 256
 
-    bar = tqdm(total=len(ds), desc="Going through dataset")
+    bar = tqdm(total=len(ds), desc=f'Going through dataset "{dataset_name}"')
     for row in ds:
         # Change Triplets into an eaier to read format
         dirty_triplets = row["modified_triple_sets"]["mtriple_set"][0]
-        # triplets = []
-        # self.local_rels = set()
 
         # Get Matching Text
         for i in range(len(row["lex"]["comment"])):
@@ -250,8 +262,10 @@ def parse_webnlg_ds(  # TODO: clean this method up
                 )["input_ids"]
 
                 tokd_triplets, updated_rel_dict, token_types = get_target_encoding(
-                    text, dirty_triplets, tokenizer, rel_dict
+                    text, dirty_triplets, tokenizer, rel_dict, add_RathThan_Rem
                 )
+                if len(tokd_triplets) == 0 and len(token_types) == 0:
+                    continue
                 rel_dict.update(updated_rel_dict)
                 # Tokenize them and remove the outer stuff
 
@@ -292,6 +306,7 @@ def get_target_encoding(
     dtriplets: List[str],
     tokenizer: PreTrainedTokenizer,
     rel_dict: Dict,
+    add_RathThan_Rem: bool,
 ) -> Tuple[List[int], Dict[str, int], List[int]]:
     """
     An alternate (and possibly final) approach to extracting triplets.
@@ -329,7 +344,10 @@ def get_target_encoding(
 
         # Add to Dictionary
         if rel not in unique_rels.keys():
-            unique_rels[rel] = len(unique_rels.keys())
+            if add_RathThan_Rem:
+                unique_rels[rel] = len(unique_rels.keys())
+            else:  # This is non-trainign dataset so we dont add this
+                continue
 
         cur_len = lambda: len(new_triplets)
 
