@@ -52,8 +52,6 @@ class CopyAttentionBoi(L.LightningModule):
 
         self.my_logger = setup_logger("CopyAttentionBoi", INFO)
 
-        # CHECK: amount_of_relations has correct value
-        # self.criterion = TypedNLLLoss(tokenizer.vocab_size, self.amount_of_relations)
         self.criterion = nn.NLLLoss()
         # Create Configuration as per Parent
         self.bart_config = BartConfig.from_pretrained(parent_model_name)
@@ -147,13 +145,6 @@ class CopyAttentionBoi(L.LightningModule):
         encoder_output = self.base.encoder(inputs, encoder_attn_mask)  # type: ignore
         encoder_states = encoder_output.last_hidden_state
 
-        # Initiation
-        # (batch_size x beam width) x (sequence lengt)
-        # Initial states is just (batch_size) x (sequence length)
-        # we want to repeat sequences in a new dimension 1 for (beam_width)
-        # cur_state = torch.repeat_interleave(initial_states, self.beam_width, dim=0)
-
-        cur_seq_length = 1
         # (batch_size) x (beam_width) x (cur_seq_length)
         cur_sequences = initial_states.unsqueeze(-1)
         # OPTIM: we could store the decoder states
@@ -161,9 +152,20 @@ class CopyAttentionBoi(L.LightningModule):
             (cur_sequences.size(0), cur_sequences.size(1)), device=initial_states.device
         )
 
-        for s in range(256):  # type: ignore
-            cur_beam_width = cur_sequences.size(1)
+        stopping_criteria = torch.zeros(
+            (batch_size, self.beam_width), device=initial_states.device, dtype=torch.int
+        )
 
+        for s in range(256):  # type: ignore
+            self.my_logger.debug(
+                f"Decoding {s}nth step cur_sequences shape : {cur_sequences.shape}. Possible decodings for input '{self.tokenizer.decode(inputs[0,:])}' are:"
+            )
+            for i in range(cur_sequences.size(1)):
+                self.my_logger.debug(
+                    f"So far the decoding is: {self.tokenizer.decode(cur_sequences[0,i,:].squeeze())}"
+                )
+
+            cur_beam_width = cur_sequences.size(1)
             ########################################
             # Organize and get probabilities of current choices
             ########################################
@@ -229,14 +231,15 @@ class CopyAttentionBoi(L.LightningModule):
                 cur_sequences = cur_sequences.repeat_interleave(self.beam_width, dim=1)
 
             cur_sequences = torch.cat((cur_sequences, top_i), dim=-1)
-            # new_view = cur_state.view(batch_size, self.beam_width, cur_seq_length)
-            # expanded_view = new_view.unsqueeze(2).expand(-1, -1, self.beam_width, -1)
-            # candidates = torch.cat((expanded_view, top_i), dim=-1)
 
-            # completed_bool_tape = [ for ]
+            # </s> token present
+            fwdss_id = self.tokenizer.convert_tokens_to_ids(["</s>"])[0]
+            # Boolean or on Tensors
+            stopping_criteria = stopping_criteria | (top_i.squeeze(-1) == fwdss_id)
 
-            # Make it back into (batch_size) x ()
-            cur_seq_length += 1
+            if torch.all(stopping_criteria):
+                break
+
         self.my_logger.info(f"Returning cur_sequences with shape {cur_sequences.shape}")
         return cur_sequences
 
@@ -387,35 +390,3 @@ def find_padding_indices(tensor, padding_token=0):
             index = -1
         indices.append(index)
     return indices
-
-
-class TypedNLLLoss(nn.Module):
-    def __init__(self, vocab_size: int, rel_space_size: int):
-        super(TypedNLLLoss, self).__init__()
-        self.vocab_size = vocab_size
-        self.rel_space_size = rel_space_size
-        self.nll_loss = nn.NLLLoss(reduction="none")
-
-    def forward(self, output, target, masks):
-        # Split the output and target into normal and copy parts
-        third_dim_len = output.size(2)
-        output_normal = output[
-            masks["normal"].unsqueeze(-1).expand(-1, -1, third_dim_len),
-        ][: self.vo]
-        output_rel = output[
-            :, masks["relationship"], self.vocab_size : self.rel_space_size
-        ]
-        output_copy = output[:, masks["copy"], self.vocab_size + self.rel_space_size :]
-
-        target_normal = target[masks["normal"]]
-        target_rel = target[masks["relationship"]]
-        target_copy = target[masks["copy"]]
-
-        # Compute the loss for the normal and copy parts separately
-        loss_normal = self.nll_loss(output_normal, target_normal)
-        loss_rel = self.nll_loss(output_rel, target_rel)
-        loss_copy = self.nll_loss(output_copy, target_copy)
-        # Combine the losses
-        loss = loss_normal + loss_copy + loss_rel
-        # Average the loss over the non-zero elements
-        return loss.sum()

@@ -66,7 +66,7 @@ class DataModule(L.LightningDataModule):
             with open(os.path.join(self.cache_loc, "metadata.json"), "r") as f:
                 self.metadata = json.load(f)
             self.logger.info(
-                f"We are considering {len(self.metadata['relationships'])} relationships"
+                f"We are considering {len(self.metadata['relationships'].keys())} relationships"
             )
         else:
             self.logger.info("🛠 No cached dataset foud. Will build from scratch...")
@@ -104,7 +104,7 @@ class DataModule(L.LightningDataModule):
     def _preprocess_row(self, row):
         # Iterate over rows:
         tokens = torch.LongTensor(np.array(row["tokens"]))
-        amnt_rels = len(self.metadata["relationships"])
+        amnt_rels = len(self.metadata["relationships"].keys())
         vocab_size = self.tokenizer.vocab_size
 
         token_types = torch.LongTensor(np.array(row["token_types"]))
@@ -127,7 +127,7 @@ class DataModule(L.LightningDataModule):
         needs_to_load_data = [
             self.train_dataset == None,
             self.val_dataset == None,
-            len(self.metadata) == 0,
+            len(self.metadata.keys()) == 0,
         ]
         if any(needs_to_load_data):
             self.pre_prepare_data()
@@ -153,6 +153,7 @@ class DataModule(L.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=12,
             collate_fn=collate_fn,
+            shuffle=True,  # Avoids ugly validation loss graph
         )
 
     def _load_raw_dataset(
@@ -212,7 +213,7 @@ class DataModule(L.LightningDataModule):
         # Make sure that
 
         # Store a JSon of all metadata:
-        self.metadata["relationships"] = list(rels_dict.keys())
+        self.metadata["relationships"] = rels_dict
         metadata_js = json.dumps(self.metadata)
         with open(os.path.join(self.cache_loc, "metadata.json"), "w") as f:
             f.write(metadata_js)
