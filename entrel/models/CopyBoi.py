@@ -67,7 +67,9 @@ class CopyAttentionBoi(L.LightningModule):
         # Increase Embedding for new tokens
         max_input_len = self.bart_config.max_position_embeddings
         self.base.resize_token_embeddings(
-            self.tokenizer.vocab_size + self.amount_of_relations + max_input_len
+            # self.tokenizer.vocab_size + self.amount_of_relations + max_input_len
+            self.tokenizer.vocab_size
+            + self.amount_of_relations
         )
 
         ####################
@@ -92,29 +94,22 @@ class CopyAttentionBoi(L.LightningModule):
         # Check if it is training
         inputs = batch
 
-        padding_token = self.tokenizer.pad_token_id
-        attn_mask = torch.ones_like(inputs)
-        attn_mask[inputs == padding_token] = 0
-        encoder_output = self.base.encoder(inputs, attn_mask)  # type: ignore
-        encoder_hiddstates = encoder_output.last_hidden_state
-
         # Use decoder for inference
         if not self.training:
-            self._autoregressive_decoder(encoder_hiddstates, attn_mask)
+            return self._autoregressive_decoder(inputs)
         else:
             pass  # TODO: write teacher-forcing method here
 
         return
 
-    def _autoregressive_decoder(
-        self, encoder_states: torch.Tensor, encoder_attn_mask: torch.Tensor
-    ):
+    def _autoregressive_decoder(self, inputs: torch.Tensor):
         # Start the memory
         outputs = torch.full(  # Initial State
-            (encoder_states.shape[0], 1),
+            (inputs.shape[0], 1),
             int(self.tokenizer.convert_tokens_to_ids("<s>")),
-        ).to(encoder_states.device)
-        self._beamsearch(encoder_states, encoder_attn_mask, outputs)
+        ).to(inputs.device)
+
+        return self._beamsearch(inputs, outputs)
 
     def _mixed_logits(self, encoder_states, decoder_states) -> torch.Tensor:
         """
@@ -139,13 +134,18 @@ class CopyAttentionBoi(L.LightningModule):
 
     def _beamsearch(
         self,
-        encoder_states: torch.Tensor,
-        encoder_attn_mask: torch.Tensor,
+        inputs: torch.Tensor,
         initial_states: torch.Tensor,
     ):
         # We keep topk paths as such:
         batch_size = initial_states.shape[0]
         pad_token = self.tokenizer.pad_token_id
+
+        # Input Stuff
+        encoder_attn_mask = torch.ones_like(inputs)
+        encoder_attn_mask[inputs == pad_token] = 0
+        encoder_output = self.base.encoder(inputs, encoder_attn_mask)  # type: ignore
+        encoder_states = encoder_output.last_hidden_state
 
         # Initiation
         # (batch_size x beam width) x (sequence lengt)
@@ -157,15 +157,18 @@ class CopyAttentionBoi(L.LightningModule):
         # (batch_size) x (beam_width) x (cur_seq_length)
         cur_sequences = initial_states.unsqueeze(-1)
         # OPTIM: we could store the decoder states
+        probabilities = torch.zeros(
+            (cur_sequences.size(0), cur_sequences.size(1)), device=initial_states.device
+        )
 
-        for s in range(self.base.decoder.max_target_positions):  # type: ignore
+        for s in range(256):  # type: ignore
             cur_beam_width = cur_sequences.size(1)
 
             ########################################
             # Organize and get probabilities of current choices
             ########################################
 
-            cs_tensor = cur_sequences[:, :, -1].view((batch_size * cur_beam_width, -1))
+            cs_tensor = cur_sequences.view(batch_size * cur_beam_width, -1)
             rptd_enc_states = encoder_states.repeat_interleave(cur_beam_width, dim=0)
             rptd_enc_attn = encoder_attn_mask.repeat_interleave(cur_beam_width, dim=0)
 
@@ -188,16 +191,36 @@ class CopyAttentionBoi(L.LightningModule):
             mixed_logits = self._mixed_logits(rptd_enc_states, decoder_last_hidd_state)
             mixed_probabilities = F.softmax(mixed_logits, dim=-1)
 
-            # Reconstruct to do topk across beams
-            proper_probs = mixed_probabilities.view(batch_size, -1)
+            cum_probs = probabilities.view(batch_size * cur_beam_width, -1, 1) + (
+                -1 * mixed_probabilities.log()
+            )
 
-            new_prob_size = (
+            # Reconstruct to do topk across beams
+            proper_probs = cum_probs.view(batch_size, -1)
+
+            prob_state_space_size = (
                 self.tokenizer.vocab_size
                 + self.amount_of_relations
                 + self.bart_config.max_position_embeddings
             )
+
             top_p, top_i = torch.topk(proper_probs, self.beam_width)
-            top_i = (top_i % new_prob_size).view(batch_size, self.beam_width, 1)
+            top_i = (top_i % prob_state_space_size).view(batch_size, self.beam_width, 1)
+
+            probabilities = top_p
+
+            ## Fix Copy:
+            copy_mask = (
+                top_i >= self.tokenizer.vocab_size + self.amount_of_relations
+            )  # .nonzero(as_tuple=False)
+
+            ids = top_i[copy_mask] % (
+                self.tokenizer.vocab_size + self.amount_of_relations
+            )
+            batch_idx = copy_mask.nonzero(as_tuple=True)
+            if len(batch_idx) != 0:  # If there are ids to replace
+                enc_input_vals = inputs[batch_idx[0], ids]
+                top_i[copy_mask] = enc_input_vals
 
             # cur_sate is (batch_size x beam_width ) x (sequence length) in shape
             # probabilities are (batch_size x beam_width) x (beam_width)
@@ -214,6 +237,7 @@ class CopyAttentionBoi(L.LightningModule):
 
             # Make it back into (batch_size) x ()
             cur_seq_length += 1
+        self.my_logger.info(f"Returning cur_sequences with shape {cur_sequences.shape}")
         return cur_sequences
 
     def _teacher_forcing_inputs(
