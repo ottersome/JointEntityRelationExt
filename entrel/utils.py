@@ -28,6 +28,8 @@ def argfun():
     ap.add_argument("--ignore_chkpnt", action="store_false", default=True)
     ap.add_argument("--wandb", action="store_true")
     ap.add_argument("--wandb_project_name", default="JointEntRel_Extraction")
+    ap.add_argument("--wrname", default=None, help="Name for WanDB Run")
+    ap.add_argument("--wrnotes", default=None, help="Notes for wandb Run")
     ap.add_argument("--epochs", default=1)
     ap.add_argument("--precision", default=float16)
     ap.add_argument("--model", default="facebook/bart-large")

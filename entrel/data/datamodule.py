@@ -323,12 +323,13 @@ def get_target_encoding(
     new_vocab_target = []
     unique_rels = deepcopy(rel_dict)
     vocab_size = tokenizer.vocab_size
+
     cur_len = lambda: len(new_hybrid_target)
     length_sofar = 0
+    new_hybrid_target += tokenizer.convert_tokens_to_ids(["<s>"])  # type: ignore
     token_ids_types += [TokenType.NORMAL.value] * (cur_len() - length_sofar)
     length_sofar = cur_len()
 
-    new_hybrid_target += tokenizer.convert_tokens_to_ids(["<s>"])  # type: ignore
     for i, triplet in enumerate(dtriplets):
         # NOTE: maybe try to use `tokenizer.tokenize` for more fine grained splitting ?
         # Replace _ with " "

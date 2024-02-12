@@ -48,7 +48,7 @@ if __name__ == "__main__":
         logger.info("📂 Loading Model from Checkpoint")
         model = CopyAttentionBoi.load_from_checkpoint(
             checkpoint_path,
-            num_rels,
+            data_module.metadata["relationships"],
             tokenizer,
             parent_model_name=args.model,
             lr=1e-5,
@@ -57,7 +57,7 @@ if __name__ == "__main__":
     else:
         logger.info("Loading Model from Scratch")
         model = CopyAttentionBoi(
-            num_rels,
+            data_module.metadata["relationships"],
             tokenizer,
             parent_model_name=args.model,
             lr=1e-5,
@@ -65,15 +65,20 @@ if __name__ == "__main__":
             useRemoteWeights=False,
             beam_width=10,
         )
+
     # Check memory footprint
     # logger.info(f"Model's memory footprint {model.get_memory_footprint()}")
 
-    # Do WandB Iinitalization
+    # Do WandB Initialization
     if args.wandb:
         logger.info("🪄 Instantiating WandB")
-        wandb_logger = WandbLogger(project=args.wandb_project_name)
+        wandb_logger = WandbLogger(
+            project=args.wandb_project_name, name=args.wrname, notes=args.wrnotes
+        )
     else:
+        logger.info("⚠️ Starting training without wandb option.")
         wandb_logger = None
+
     # CheckPointing
     checkpoint_callback = ModelCheckpoint(
         dirpath="./checkpoints", save_top_k=3, monitor="val_loss"
@@ -86,7 +91,7 @@ if __name__ == "__main__":
         logger=wandb_logger,
         accumulate_grad_batches=4,
         max_epochs=args.epochs,
-        val_check_interval=0.1,
+        val_check_interval=0.05,
         log_every_n_steps=1,
         enable_checkpointing=True,
         callbacks=[checkpoint_callback],
