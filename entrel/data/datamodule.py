@@ -156,6 +156,20 @@ class DataModule(L.LightningDataModule):
             shuffle=True,  # Avoids ugly validation loss graph
         )
 
+    def _load_locally(self, path: str):
+        # Check if path exists
+        final_output = {}
+        partitions = ["dev", "test", "train"]
+        for p in partitions:
+            target = os.path.join(path, p)
+            tfile = os.path.join(target, "0000.parquet")
+            if not os.path.exists(target):
+                raise ValueError(f"Path {target} does not exist.")
+            final_output[p] = pd.read_parquet(tfile).to_dict("records")
+
+        return final_output
+        # Check if within said sub_dirs there mores
+
     def _load_raw_dataset(
         self,
         dataset_type: DatasetInUse,
@@ -175,7 +189,8 @@ class DataModule(L.LightningDataModule):
             ]
         )
         # Method provided by libraries
-        dataset = load_dataset("web_nlg", "release_v3.0_en")
+        # dataset = load_dataset("data/web_nlg", "release_v3.0_en")
+        dataset = self._load_locally("data/web_nlg")
 
         # We will mix them because relationships are not equally spread
         # 👁️ Pay attention here: The split they provide will not ensure all relationships are equally spread across folds.
